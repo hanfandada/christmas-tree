@@ -136,23 +136,21 @@ export async function fileToSquareBlob(file) {
   });
 }
 
-/** Blob → three 纹理 */
-export async function blobToTexture(blob) {
+/**
+ * 只取照片的平均色（1x1 采样），给树上的礼物盒上色。
+ * 不保留完整纹理，几十张照片也不会占显存。
+ */
+export async function blobToAverageColor(blob) {
   const bitmap = await createImageBitmap(blob);
-
-  // 先画进 canvas 再建纹理：ImageBitmap 直接当纹理时，
-  // 部分浏览器会忽略 flipY，导致照片上下颠倒
   const canvas = document.createElement('canvas');
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  canvas.getContext('2d').drawImage(bitmap, 0, 0);
+  canvas.width = canvas.height = 1;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0, 1, 1);
   if (bitmap.close) bitmap.close();
 
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
-  texture.generateMipmaps = true;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
-  texture.needsUpdate = true;
-  return texture;
+  const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+  const color = new THREE.Color().setRGB(r / 255, g / 255, b / 255);
+  // 往暖金色偏一点，和节日的灯串更协调
+  color.lerp(new THREE.Color(0xffcf9a), 0.25);
+  return color;
 }

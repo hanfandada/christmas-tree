@@ -1,34 +1,89 @@
 import * as THREE from 'three';
-import { PALETTE, TREE } from './config.js';
+import { TREE } from './config.js';
 import { createGlowTexture } from './textures.js';
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const MAX_PHOTOS = 60;
+const RIBBON_COLOR = 0xe0b169;
+// 照片主色太灰时，退回一组节日配色，避免树上挂一排"白盒子"
+const FESTIVE = [0xc8443f, 0xd08a3c, 0x2f8f63, 0x3f6fc4, 0xa8478c];
 
 /**
- * 照片挂饰：把照片贴成一张圆形发光挂饰，按黄金角螺旋均匀分布在树身上。
+ * 礼物盒挂饰。
  *
- * 数量变化时不重建，而是重算每个挂饰的目标位置并让它平滑滑过去，
- * 所以"加一张照片"是连续的动画，而不是跳一下。
+ * 树上挂的不是照片，而是一个个小礼盒；照片藏在盒子里。
+ * 平时：小小一个盒子（颜色取自照片主色），安静挂在枝头。
+ * 悬停：盒子放大、轻微晃动、盒盖翘起，周围洒粒子。
+ * 点击：盒盖弹开、炸出一簇金色火光，照片从盒子里飞出、放大到页面中间。
  */
-export function createPhotoOrnaments(world) {
+export function createPhotoOrnaments(world, { onSparkle } = {}) {
   const group = new THREE.Group();
-  group.renderOrder = 4;
   world.add(group);
 
   const glowTexture = createGlowTexture(128);
-  const circleGeometry = new THREE.CircleGeometry(1, 56);
-  const rimGeometry = new THREE.RingGeometry(1.0, 1.14, 56);
 
-  /** id -> item */
+  /* ---------------- 共用几何体 ---------------- */
+
+  const bodyGeometry = new THREE.BoxGeometry(1, 0.78, 1);
+  const lidGeometry = new THREE.BoxGeometry(1.1, 0.14, 1.1);
+  const ribbonGeometryV = new THREE.BoxGeometry(0.16, 0.8, 1.03);
+  const ribbonGeometryH = new THREE.BoxGeometry(1.03, 0.8, 0.16);
+  const lidRibbonGeometryV = new THREE.BoxGeometry(0.16, 0.16, 1.12);
+  const lidRibbonGeometryH = new THREE.BoxGeometry(1.12, 0.16, 0.16);
+  const bowGeometry = new THREE.TorusGeometry(0.115, 0.038, 8, 18);
+  const stringGeometry = new THREE.PlaneGeometry(0.02, 0.3);
+
+  const vertexShader = /* glsl */ `
+    varying vec3 vNormalW;
+    void main() {
+      vNormalW = normalize(mat3(modelMatrix) * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `;
+
+  // 没有真实灯光，用最便宜的假光照：一个固定方向 + 一点自发光
+  const fragmentShader = /* glsl */ `
+    uniform vec3 uColor;
+    uniform float uOpacity;
+    uniform float uGlow;
+    varying vec3 vNormalW;
+
+    void main() {
+      vec3 n = normalize(vNormalW);
+      float lambert = clamp(dot(n, normalize(vec3(0.45, 0.8, 0.55))), 0.0, 1.0);
+      float rim = pow(1.0 - abs(n.z), 2.0);
+      vec3 color = uColor * (0.42 + 0.78 * lambert);
+      color += uColor * uGlow * 0.55;
+      color += uColor * rim * 0.08;
+      gl_FragColor = vec4(color, uOpacity);
+    }
+  `;
+
+  function makeMaterial(color) {
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color(color) },
+        uOpacity: { value: 1 },
+        uGlow: { value: 0 },
+      },
+      transparent: true,
+      depthWrite: true,
+      vertexShader,
+      fragmentShader,
+    });
+  }
+
+  /* ---------------- 状态 ---------------- */
+
   const items = new Map();
-  /** 保持插入顺序，决定从下往上的排列 */
   const order = [];
+  let hoveredId = null;
+  let sparkleAt = 0;
 
   function slotFor(index, total) {
     const t = 0.12 + 0.74 * ((index + 0.5) / Math.max(total, 1));
     const angle = index * GOLDEN_ANGLE + 0.35;
-    const radius = TREE.baseRadius * Math.pow(1 - t, 0.94) * 1.2;
+    const radius = TREE.baseRadius * Math.pow(1 - t, 0.94) * 1.22;
     return new THREE.Vector3(
       Math.cos(angle) * radius,
       TREE.baseY + t * TREE.height,
@@ -36,93 +91,118 @@ export function createPhotoOrnaments(world) {
     );
   }
 
-  /** 照片越多，挂饰越小，避免挤成一团 */
-  function radiusFor(total) {
-    return THREE.MathUtils.clamp(0.62 * Math.pow(6 / Math.max(total, 1), 0.32), 0.26, 0.55);
+  function sizeFor(total) {
+    return THREE.MathUtils.clamp(0.52 * Math.pow(6 / Math.max(total, 1), 0.14), 0.34, 0.52);
   }
 
   function reflow() {
     const total = order.length;
-    const radius = radiusFor(total);
+    const size = sizeFor(total);
     order.forEach((id, index) => {
       const item = items.get(id);
       item.slot.copy(slotFor(index, total));
-      item.targetRadius = radius;
+      item.targetScale = size;
     });
   }
 
-  function add(id, texture, { spawnFrom = null, animate = true } = {}) {
+  /* ---------------- 创建 / 销毁 ---------------- */
+
+  function add(id, color, { spawnFrom = null, animate = true } = {}) {
     if (items.has(id) || items.size >= MAX_PHOTOS) return null;
 
     const itemGroup = new THREE.Group();
+    itemGroup.userData.photoId = id;
 
-    const material = new THREE.MeshBasicMaterial({
-      map: texture,
-      color: 0x8c8c8c, // 压一点亮度，避免照片被泛光糊掉
-      toneMapped: false, // 照片保持原本的颜色，不被色调映射压灰
-      transparent: true,
-    });
-    const face = new THREE.Mesh(circleGeometry, material);
-    face.userData.photoId = id;
-    face.renderOrder = 5; // 排在树体粒子之后，避免被加法混合的光点叠白
-    itemGroup.add(face);
+    // 用照片主色给礼物上色；太灰就换成节日配色
+    const hsl = { h: 0, s: 0, l: 0 };
+    color.getHSL(hsl);
+    const sourceColor = hsl.s < 0.12 ? new THREE.Color(FESTIVE[order.length % FESTIVE.length]) : color;
+    const baseColor = sourceColor.clone().offsetHSL(0, 0.2, -0.03).multiplyScalar(0.66);
 
-    const rimMaterial = new THREE.SpriteMaterial({
+    const bodyMaterial = makeMaterial(baseColor);
+    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+    body.renderOrder = 6;
+    itemGroup.add(body);
+
+    // 盒盖（连同盖子上的丝带和蝴蝶结一起动）
+    const lid = new THREE.Group();
+    lid.position.y = 0.46;
+
+    const lidMaterial = makeMaterial(baseColor.clone().multiplyScalar(1.12));
+    const lidMesh = new THREE.Mesh(lidGeometry, lidMaterial);
+    lid.add(lidMesh);
+
+    const ribbonMaterial = makeMaterial(new THREE.Color(RIBBON_COLOR).multiplyScalar(0.75));
+    const lidRibbonV = new THREE.Mesh(lidRibbonGeometryV, ribbonMaterial);
+    lidRibbonV.position.y = 0.02;
+    const lidRibbonH = new THREE.Mesh(lidRibbonGeometryH, ribbonMaterial);
+    lidRibbonH.position.y = 0.02;
+    lid.add(lidRibbonV, lidRibbonH);
+
+    const bowMaterial = makeMaterial(new THREE.Color(RIBBON_COLOR).multiplyScalar(0.8));
+    const bowLeft = new THREE.Mesh(bowGeometry, bowMaterial);
+    bowLeft.position.set(-0.1, 0.14, 0);
+    bowLeft.rotation.set(0, 0.5, 0.6);
+    const bowRight = new THREE.Mesh(bowGeometry, bowMaterial);
+    bowRight.position.set(0.1, 0.14, 0);
+    bowRight.rotation.set(0, -0.5, -0.6);
+    lid.add(bowLeft, bowRight);
+
+    itemGroup.add(lid);
+
+    // 盒身竖向丝带
+    const bodyRibbonV = new THREE.Mesh(ribbonGeometryV, ribbonMaterial);
+    const bodyRibbonH = new THREE.Mesh(ribbonGeometryH, ribbonMaterial);
+    bodyRibbonV.renderOrder = 6;
+    bodyRibbonH.renderOrder = 6;
+    itemGroup.add(bodyRibbonV, bodyRibbonH);
+
+    // 挂绳
+    const stringMaterial = makeMaterial(0xcbb894);
+    stringMaterial.uniforms.uOpacity.value = 0.22;
+    const string = new THREE.Mesh(stringGeometry, stringMaterial);
+    string.position.y = 0.84;
+    itemGroup.add(string);
+
+    // 盒子里的光（打开时溢出）
+    const glowMaterial = new THREE.SpriteMaterial({
       map: glowTexture,
-      color: new THREE.Color(PALETTE.ornaments[1]),
+      color: baseColor.clone().lerp(new THREE.Color(0xfff0c8), 0.5),
       blending: THREE.AdditiveBlending,
       transparent: true,
       depthWrite: false,
-      opacity: 0.22,
+      opacity: 0,
     });
-    const halo = new THREE.Sprite(rimMaterial);
-    halo.scale.setScalar(2.6);
-    halo.renderOrder = 5;
-    itemGroup.add(halo);
-
-    const ringMaterial = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(0xffd9a0),
-      transparent: true,
-      opacity: 0.55,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    const ring = new THREE.Mesh(rimGeometry, ringMaterial);
-    itemGroup.add(ring);
-
-    const outlineMaterial = new THREE.MeshBasicMaterial({
-      color: 0x05070b,
-      transparent: true,
-      opacity: 0.55,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    const outline = new THREE.Mesh(new THREE.RingGeometry(1.0, 1.07, 56), outlineMaterial);
-    outline.renderOrder = 1;
-    itemGroup.add(outline);
+    const glow = new THREE.Sprite(glowMaterial);
+    glow.position.y = 0.3;
+    glow.scale.setScalar(1.6);
+    glow.renderOrder = 5;
+    itemGroup.add(glow);
 
     const item = {
       id,
       group: itemGroup,
-      face,
-      halo,
-      ring,
-      material,
-      ringMaterial,
-      outlineMaterial,
-      texture,
+      lid,
+      glow,
+      bodyMaterial,
+      lidMaterial,
+      ribbonMaterial,
+      bowMaterial,
+      stringMaterial,
+      glowMaterial,
       slot: new THREE.Vector3(),
-      targetRadius: 0.4,
+      targetScale: 0.4,
       spawnFrom: spawnFrom ? spawnFrom.clone() : null,
       progress: animate ? 0 : 1,
       phase: Math.random() * Math.PI * 2,
-      disposing: false,
+      hover: 0,
+      hoverTarget: 0,
+      open: 0,
+      openTarget: 0,
     };
 
-    // 初始位置：从相机方向飞入
     itemGroup.position.copy(item.spawnFrom || slotFor(order.length, order.length + 1));
-    itemGroup.scale.setScalar(animate ? 0.05 : 1);
+    itemGroup.scale.setScalar(animate ? 0.05 : item.targetScale);
 
     items.set(id, item);
     order.push(id);
@@ -131,7 +211,7 @@ export function createPhotoOrnaments(world) {
 
     if (!animate) {
       itemGroup.position.copy(item.slot);
-      itemGroup.scale.setScalar(item.targetRadius);
+      itemGroup.scale.setScalar(item.targetScale);
     }
 
     return item;
@@ -144,17 +224,20 @@ export function createPhotoOrnaments(world) {
     const index = order.indexOf(id);
     if (index >= 0) order.splice(index, 1);
     group.remove(item.group);
-    item.material.dispose();
-    item.ringMaterial.dispose();
-    item.outlineMaterial.dispose();
-    item.texture.dispose();
-    item.halo.material.dispose();
+    item.bodyMaterial.dispose();
+    item.lidMaterial.dispose();
+    item.ribbonMaterial.dispose();
+    item.bowMaterial.dispose();
+    item.stringMaterial.dispose();
+    item.glowMaterial.dispose();
     reflow();
   }
 
   function clear() {
     for (const id of [...order]) remove(id);
   }
+
+  /* ---------------- 每帧更新 ---------------- */
 
   const cameraLocal = new THREE.Vector3();
 
@@ -166,36 +249,47 @@ export function createPhotoOrnaments(world) {
     }
 
     for (const item of items.values()) {
-      // 飞入动画
+      // 飞入 / 归位
       if (item.progress < 1) {
         item.progress = Math.min(1, item.progress + dt / 0.85);
         const k = easeOut(item.progress);
-        if (item.spawnFrom) {
-          item.group.position.lerpVectors(item.spawnFrom, item.slot, k);
-        } else {
-          item.group.position.copy(item.slot);
-        }
-        item.group.scale.setScalar(0.05 + (item.targetRadius - 0.05) * k);
+        if (item.spawnFrom) item.group.position.lerpVectors(item.spawnFrom, item.slot, k);
+        else item.group.position.copy(item.slot);
+        item.group.scale.setScalar(0.05 + (item.targetScale - 0.05) * k);
       } else {
-        // 已就位：缓慢滑向新槽位（数量变化时）
         item.group.position.lerp(item.slot, Math.min(1, dt * 2.2));
+        item.hover += (item.hoverTarget - item.hover) * Math.min(1, dt * 9);
+        const desired = item.targetScale * (1 + item.hover * 0.85);
         const current = item.group.scale.x;
-        const next = current + (item.targetRadius - current) * Math.min(1, dt * 3.2);
-        item.group.scale.setScalar(next);
+        item.group.scale.setScalar(current + (desired - current) * Math.min(1, dt * 6));
       }
 
-      const pulse = 0.5 + 0.5 * Math.sin(time * 1.4 + item.phase);
-      item.ringMaterial.opacity = 0.3 + 0.35 * pulse;
-      item.halo.material.opacity = 0.12 + 0.18 * pulse;
-      item.halo.scale.setScalar(2.2 + pulse * 0.35);
+      // 开合进度
+      item.open += (item.openTarget - item.open) * Math.min(1, dt * 7);
 
-      // 绕 Y 轴朝向相机：像挂在枝头的小吊坠，永远正面对着看的人
+      const pulse = 0.5 + 0.5 * Math.sin(time * 1.5 + item.phase);
+
+      // 盒盖：悬停微翘，点击弹开
+      const lift = item.hover * 0.06 + item.open * 0.55;
+      item.lid.position.y = 0.46 + lift;
+      item.lid.rotation.z = item.open * 0.55 + item.hover * 0.06;
+      item.lid.rotation.x = item.open * 0.28;
+      item.lidMaterial.uniforms.uOpacity.value = 1 - item.open * 0.65;
+
+      // 盒身：打开时内部透出暖光
+      item.bodyMaterial.uniforms.uGlow.value = item.open * 0.55 + item.hover * 0.12 + 0.04 * pulse;
+      item.glowMaterial.opacity = item.open * 0.85;
+      item.glow.scale.setScalar(1.2 + item.open * 1.6);
+
+      // 悬停时轻轻晃
+      item.group.rotation.z = Math.sin(time * 3.2 + item.phase) * 0.05 * item.hover;
+
+      // 朝向相机
       const dx = cameraLocal.x - item.group.position.x;
       const dz = cameraLocal.z - item.group.position.z;
       item.group.rotation.y = Math.atan2(dx, dz);
-      item.group.rotation.x = -0.06 + Math.sin(time * 0.7 + item.phase) * 0.05;
 
-      // 转到树背面时淡出：否则会被树体粒子叠成一片白雾
+      // 转到背面淡出
       const normal = Math.hypot(item.group.position.x, item.group.position.z);
       let facing = 1;
       if (normal > 0.0001) {
@@ -206,22 +300,43 @@ export function createPhotoOrnaments(world) {
       }
       const visibility = THREE.MathUtils.smoothstep(facing, -0.05, 0.3);
       item.group.visible = visibility > 0.02;
-      item.material.opacity = visibility;
-      item.outlineMaterial.opacity = 0.55 * visibility;
-      item.ringMaterial.opacity = (0.3 + 0.35 * pulse) * visibility;
-      item.halo.material.opacity = (0.12 + 0.18 * pulse) * visibility;
+
+      item.bodyMaterial.uniforms.uOpacity.value = visibility;
+      item.lidMaterial.uniforms.uOpacity.value = (1 - item.open * 0.65) * visibility;
+      item.ribbonMaterial.uniforms.uOpacity.value = visibility;
+      item.bowMaterial.uniforms.uOpacity.value = visibility;
+      item.stringMaterial.uniforms.uOpacity.value = (0.18 + item.hover * 0.25) * visibility;
+      item.glowMaterial.opacity = item.open * 0.85 * visibility;
+
+      // 悬停时朝观众浮出一点，并持续洒粒子
+      if (item.hover > 0.01) {
+        const fx = cameraLocal.x - item.group.position.x;
+        const fy = cameraLocal.y - item.group.position.y;
+        const fz = cameraLocal.z - item.group.position.z;
+        const len = Math.hypot(fx, fy, fz) || 1;
+        item.group.position.x += (fx / len) * item.hover * 0.22;
+        item.group.position.y += (fy / len) * item.hover * 0.22;
+        item.group.position.z += (fz / len) * item.hover * 0.22;
+      }
+
+      if (item.hover > 0.4 && onSparkle && time - sparkleAt > 0.26) {
+        sparkleAt = time;
+        onSparkle(item.group.getWorldPosition(new THREE.Vector3()));
+      }
     }
   }
 
   function pick(raycaster) {
-    // 只拾取当前朝向观众的挂饰，转背面淡出的那些不该被点到
-    const faces = [];
+    const meshes = [];
     for (const item of items.values()) {
-      if (item.group.visible) faces.push(item.face);
+      if (item.group.visible) meshes.push(item.group);
     }
-    const hits = raycaster.intersectObjects(faces, false);
+    const hits = raycaster.intersectObjects(meshes, true);
     if (!hits.length) return null;
-    return hits[0].object.userData.photoId || null;
+
+    let node = hits[0].object;
+    while (node && !node.userData.photoId) node = node.parent;
+    return node ? node.userData.photoId : null;
   }
 
   return {
@@ -231,19 +346,59 @@ export function createPhotoOrnaments(world) {
     clear,
     update,
     pick,
+    setHover(id) {
+      if (hoveredId === id) return;
+      hoveredId = id;
+      for (const item of items.values()) item.hoverTarget = item.id === id ? 1 : 0;
+    },
+    setOpen(id, open) {
+      const item = items.get(id);
+      if (item) item.openTarget = open ? 1 : 0;
+    },
+    getPosition(id) {
+      const item = items.get(id);
+      return item ? item.group.getWorldPosition(new THREE.Vector3()) : null;
+    },
+    getScreenRect(id, camera, width, height) {
+      const item = items.get(id);
+      if (!item) return null;
+      const position = item.group.getWorldPosition(new THREE.Vector3());
+      const projected = position.clone().project(camera);
+      const x = (projected.x * 0.5 + 0.5) * width;
+      const y = (-projected.y * 0.5 + 0.5) * height;
+
+      const edge = position.clone().add(new THREE.Vector3(0, item.group.scale.x, 0));
+      const edgeProjected = edge.project(camera);
+      const edgeY = (-edgeProjected.y * 0.5 + 0.5) * height;
+      const size = Math.abs(edgeY - y) * 2;
+
+      return { x, y, size };
+    },
+    getDebug() {
+      return [...items.values()].map((i) => ({
+        id: i.id,
+        visible: i.group.visible,
+        hover: +i.hover.toFixed(2),
+        open: +i.open.toFixed(2),
+        scale: +i.group.scale.x.toFixed(3),
+      }));
+    },
     get count() {
       return items.size;
-    },
-    get faces() {
-      return [...items.values()].map((item) => item.face);
     },
     get max() {
       return MAX_PHOTOS;
     },
     dispose() {
       clear();
-      circleGeometry.dispose();
-      rimGeometry.dispose();
+      bodyGeometry.dispose();
+      lidGeometry.dispose();
+      ribbonGeometryV.dispose();
+      ribbonGeometryH.dispose();
+      lidRibbonGeometryV.dispose();
+      lidRibbonGeometryH.dispose();
+      bowGeometry.dispose();
+      stringGeometry.dispose();
       glowTexture.dispose();
     },
   };

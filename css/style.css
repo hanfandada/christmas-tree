@@ -54,6 +54,10 @@ body {
   cursor: grabbing;
 }
 
+#scene.is-pointing {
+  cursor: pointer;
+}
+
 /* ---------- 画面叠加层 ---------- */
 
 .vignette {
@@ -315,9 +319,15 @@ body.is-dragging .dropzone {
   display: none;
 }
 
+.viewer.is-open .viewer__backdrop {
+  opacity: 1;
+}
+
 .viewer__backdrop {
   position: absolute;
   inset: 0;
+  opacity: 0;
+  transition: opacity 0.35s ease;
   background: rgba(2, 4, 8, 0.86);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
@@ -349,6 +359,14 @@ body.is-dragging .dropzone {
   display: flex;
   justify-content: center;
   gap: 14px;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.45s ease 0.32s, transform 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.32s;
+}
+
+.viewer.is-open .viewer__actions {
+  opacity: 1;
+  transform: none;
 }
 
 @keyframes cardIn {

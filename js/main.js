@@ -17,7 +17,7 @@ import { createTrunk } from './trunk.js';
 import { createGround } from './ground.js';
 import { createPhotoOrnaments } from './photo-ornaments.js';
 import {
-  blobToTexture,
+  blobToAverageColor,
   fileToSquareBlob,
   listPhotos,
   removePhoto,
@@ -138,7 +138,9 @@ scene.add(snow.points);
 
 const bursts = createBurstSystem(scene);
 
-const photoOrnaments = createPhotoOrnaments(world);
+const photoOrnaments = createPhotoOrnaments(world, {
+  onSparkle: (position) => bursts.spawn(position, 0.32),
+});
 
 /* 像素比同步给所有着色器 */
 tree.setPixelRatio(pixelRatio);
@@ -153,8 +155,8 @@ bursts.setPixelRatio(pixelRatio);
 const params = query;
 const toWho = params.get('to');
 const gestureHint = coarsePointer
-  ? '拖拽旋转 · 双指缩放 · 轻点挂饰看大图'
-  : '拖拽旋转 · 滚轮缩放 · 拖入照片挂上树';
+  ? '拖拽旋转 · 双指缩放 · 轻点礼物拆开'
+  : '点击礼物拆开 · 拖入照片挂上树';
 greetingEl.textContent = 'Merry Christmas';
 subEl.textContent = toWho ? `To ${toWho} · ${gestureHint}` : gestureHint;
 
@@ -164,6 +166,8 @@ const pointer = new THREE.Vector2();
 const pointerTarget = new THREE.Vector2();
 let pointerDownAt = null;
 let pointerMoved = false;
+let hoverCheckAt = 0;
+const hoverNdc = new THREE.Vector2();
 
 window.addEventListener(
   'pointermove',
@@ -175,6 +179,20 @@ window.addEventListener(
       const dx = event.clientX - pointerDownAt.x;
       const dy = event.clientY - pointerDownAt.y;
       if (Math.hypot(dx, dy) > 8) pointerMoved = true;
+    } else {
+      // 悬停探测：成本很低，但仍节流到约 60ms 一次
+      const now = performance.now();
+      if (now - hoverCheckAt > 60) {
+        hoverCheckAt = now;
+        hoverNdc.set(
+          (event.clientX / window.innerWidth) * 2 - 1,
+          -(event.clientY / window.innerHeight) * 2 + 1
+        );
+        raycaster.setFromCamera(hoverNdc, camera);
+        const hovered = photoOrnaments.pick(raycaster);
+        photoOrnaments.setHover(hovered);
+        canvas.classList.toggle('is-pointing', Boolean(hovered));
+      }
     }
   },
   { passive: true }
@@ -183,6 +201,11 @@ window.addEventListener(
 canvas.addEventListener('pointerdown', (event) => {
   pointerDownAt = { x: event.clientX, y: event.clientY };
   pointerMoved = false;
+});
+
+canvas.addEventListener('pointerleave', () => {
+  photoOrnaments.setHover(null);
+  canvas.classList.remove('is-pointing');
 });
 
 canvas.addEventListener('pointerup', (event) => {
@@ -195,7 +218,19 @@ canvas.addEventListener('pointerup', (event) => {
     const hitId = photoOrnaments.pick(raycaster);
 
     if (hitId) {
-      openViewer(hitId);
+      const rect = photoOrnaments.getScreenRect(
+        hitId,
+        camera,
+        window.innerWidth,
+        window.innerHeight
+      );
+      const worldPosition = photoOrnaments.getPosition(hitId);
+      photoOrnaments.setOpen(hitId, true);
+      if (worldPosition) bursts.spawn(worldPosition, 1.1);
+      photoOrnaments.setHover(null);
+      canvas.classList.remove('is-pointing');
+      // 先让盒盖弹开一点，照片再飞出来
+      window.setTimeout(() => openViewer(hitId, rect), 380);
     } else {
       const worldPoint = new THREE.Vector3(ndc.x, ndc.y, 0.5).unproject(camera);
       const direction = worldPoint.sub(camera.position).normalize();
@@ -213,6 +248,7 @@ const photoRows = new Map();
 const raycaster = new THREE.Raycaster();
 const viewerEl = document.getElementById('viewer');
 const viewerImage = document.getElementById('viewer-image');
+const viewerBackdropEl = viewerEl?.querySelector('[data-close]');
 const toastEl = document.getElementById('toast');
 
 let viewerUrl = null;
@@ -226,7 +262,7 @@ function showToast(text) {
   toastTimer = setTimeout(() => toastEl.classList.remove('is-visible'), 2600);
 }
 
-function openViewer(id) {
+function openViewer(id, origin = null) {
   const row = photoRows.get(id);
   if (!row) return;
   if (viewerUrl) URL.revokeObjectURL(viewerUrl);
@@ -235,10 +271,37 @@ function openViewer(id) {
   viewerEl.hidden = false;
   viewerEl.dataset.photoId = id;
   controls.autoRotate = false;
+
+  requestAnimationFrame(() => {
+    viewerEl.classList.add('is-open');
+
+    // 照片从礼物盒的位置飞出来、放大到卡片尺寸
+    if (origin && !reducedMotion) {
+      const rect = viewerImage.getBoundingClientRect();
+      const dx = origin.x - (rect.left + rect.width / 2);
+      const dy = origin.y - (rect.top + rect.height / 2);
+      const scale = Math.max(0.04, origin.size / Math.max(1, rect.width));
+
+      viewerImage.animate(
+        [
+          { transform: `translate(${dx}px, ${dy}px) scale(${scale})`, opacity: 0.35 },
+          { transform: 'translate(0, 0) scale(1)', opacity: 1 },
+        ],
+        { duration: 780, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' }
+      );
+      viewerBackdropEl?.animate([{ opacity: 0 }, { opacity: 1 }], {
+        duration: 420,
+        easing: 'ease-out',
+      });
+    }
+  });
 }
 
 function closeViewer() {
   if (!viewerEl) return;
+  const openId = viewerEl.dataset.photoId;
+  if (openId) photoOrnaments.setOpen(openId, false);
+  viewerEl.classList.remove('is-open');
   viewerEl.hidden = true;
   viewerEl.dataset.photoId = '';
   viewerImage.removeAttribute('src');
@@ -259,9 +322,9 @@ async function addPhotoFromFile(file) {
   try {
     const square = await fileToSquareBlob(file);
     const row = await savePhoto(square);
-    const texture = await blobToTexture(square);
+    const color = await blobToAverageColor(square);
     photoRows.set(row.id, row);
-    photoOrnaments.add(row.id, texture, {
+    photoOrnaments.add(row.id, color, {
       spawnFrom: camera.position.clone(),
       animate: !reducedMotion,
     });
@@ -276,8 +339,8 @@ async function hydratePhotos() {
     const rows = await listPhotos();
     for (const row of rows) {
       photoRows.set(row.id, row);
-      const texture = await blobToTexture(row.blob);
-      photoOrnaments.add(row.id, texture, { animate: false });
+      const color = await blobToAverageColor(row.blob);
+      photoOrnaments.add(row.id, color, { animate: false });
     }
     if (rows.length) showToast(`树上有 ${rows.length} 张照片`);
   } catch (error) {
