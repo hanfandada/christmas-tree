@@ -15,6 +15,14 @@ import { createSky } from './sky.js';
 import { createBurstSystem } from './burst.js';
 import { createTrunk } from './trunk.js';
 import { createGround } from './ground.js';
+import { createPhotoOrnaments } from './photo-ornaments.js';
+import {
+  blobToTexture,
+  fileToSquareBlob,
+  listPhotos,
+  removePhoto,
+  savePhoto,
+} from './photos.js';
 
 const canvas = document.getElementById('scene');
 const loader = document.getElementById('loader');
@@ -24,12 +32,19 @@ const appEl = document.getElementById('app');
 
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+// ?quality=high|medium|low 可强制画质档位；强制后不再自动降级（截图和演示用）
+const query = new URLSearchParams(window.location.search);
+const forcedQuality = query.get('quality');
+const allowAutoDegrade = !forcedQuality;
+
 /* ---------------- 画质档位 ---------------- */
 
-const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+const coarsePointer =
+  window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 760;
 const cores = navigator.hardwareConcurrency || 4;
 let qualityName = coarsePointer || cores <= 4 ? 'medium' : 'high';
 if (window.innerWidth < 760) qualityName = 'medium';
+if (forcedQuality && QUALITY[forcedQuality]) qualityName = forcedQuality;
 let quality = QUALITY[qualityName];
 
 /* ---------------- 渲染器 ---------------- */
@@ -84,8 +99,8 @@ composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
   0.5, // strength
-  0.5, // radius
-  0.34 // threshold
+  0.42, // radius
+  0.45 // threshold
 );
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
@@ -123,6 +138,8 @@ scene.add(snow.points);
 
 const bursts = createBurstSystem(scene);
 
+const photoOrnaments = createPhotoOrnaments(world);
+
 /* 像素比同步给所有着色器 */
 tree.setPixelRatio(pixelRatio);
 trunk.setPixelRatio(pixelRatio);
@@ -133,11 +150,11 @@ bursts.setPixelRatio(pixelRatio);
 
 /* ---------------- 文案：支持 ?to=名字 定制 ---------------- */
 
-const params = new URLSearchParams(window.location.search);
+const params = query;
 const toWho = params.get('to');
 const gestureHint = coarsePointer
-  ? '拖拽旋转 · 双指缩放 · 轻点撒一把星火'
-  : '拖拽旋转 · 滚轮缩放 · 点击撒一把星火';
+  ? '拖拽旋转 · 双指缩放 · 轻点挂饰看大图'
+  : '拖拽旋转 · 滚轮缩放 · 拖入照片挂上树';
 greetingEl.textContent = 'Merry Christmas';
 subEl.textContent = toWho ? `To ${toWho} · ${gestureHint}` : gestureHint;
 
@@ -174,13 +191,154 @@ canvas.addEventListener('pointerup', (event) => {
       (event.clientX / window.innerWidth) * 2 - 1,
       -(event.clientY / window.innerHeight) * 2 + 1
     );
-    const worldPoint = new THREE.Vector3(ndc.x, ndc.y, 0.5).unproject(camera);
-    const direction = worldPoint.sub(camera.position).normalize();
-    const origin = camera.position.clone().addScaledVector(direction, 9.5);
-    bursts.spawn(origin, 0.95);
+    raycaster.setFromCamera(ndc, camera);
+    const hitId = photoOrnaments.pick(raycaster);
+
+    if (hitId) {
+      openViewer(hitId);
+    } else {
+      const worldPoint = new THREE.Vector3(ndc.x, ndc.y, 0.5).unproject(camera);
+      const direction = worldPoint.sub(camera.position).normalize();
+      const origin = camera.position.clone().addScaledVector(direction, 9.5);
+      bursts.spawn(origin, 0.95);
+    }
   }
   pointerDownAt = null;
 });
+
+
+/* ---------------- 照片：上传、挂树、查看、删除 ---------------- */
+
+const photoRows = new Map();
+const raycaster = new THREE.Raycaster();
+const viewerEl = document.getElementById('viewer');
+const viewerImage = document.getElementById('viewer-image');
+const toastEl = document.getElementById('toast');
+
+let viewerUrl = null;
+let toastTimer = 0;
+
+function showToast(text) {
+  if (!toastEl) return;
+  toastEl.textContent = text;
+  toastEl.classList.add('is-visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('is-visible'), 2600);
+}
+
+function openViewer(id) {
+  const row = photoRows.get(id);
+  if (!row) return;
+  if (viewerUrl) URL.revokeObjectURL(viewerUrl);
+  viewerUrl = URL.createObjectURL(row.blob);
+  viewerImage.src = viewerUrl;
+  viewerEl.hidden = false;
+  viewerEl.dataset.photoId = id;
+  controls.autoRotate = false;
+}
+
+function closeViewer() {
+  if (!viewerEl) return;
+  viewerEl.hidden = true;
+  viewerEl.dataset.photoId = '';
+  viewerImage.removeAttribute('src');
+  if (viewerUrl) {
+    URL.revokeObjectURL(viewerUrl);
+    viewerUrl = null;
+  }
+  controls.autoRotate = !reducedMotion;
+}
+
+async function addPhotoFromFile(file) {
+  if (!file.type.startsWith('image/')) return;
+  if (photoOrnaments.count >= photoOrnaments.max) {
+    showToast(`树上最多挂 ${photoOrnaments.max} 张照片`);
+    return;
+  }
+
+  try {
+    const square = await fileToSquareBlob(file);
+    const row = await savePhoto(square);
+    const texture = await blobToTexture(square);
+    photoRows.set(row.id, row);
+    photoOrnaments.add(row.id, texture, {
+      spawnFrom: camera.position.clone(),
+      animate: !reducedMotion,
+    });
+  } catch (error) {
+    console.error(error);
+    showToast('这张照片没能挂上去，换一张试试');
+  }
+}
+
+async function hydratePhotos() {
+  try {
+    const rows = await listPhotos();
+    for (const row of rows) {
+      photoRows.set(row.id, row);
+      const texture = await blobToTexture(row.blob);
+      photoOrnaments.add(row.id, texture, { animate: false });
+    }
+    if (rows.length) showToast(`树上有 ${rows.length} 张照片`);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+const addButton = document.getElementById('add-photo');
+const fileInput = document.getElementById('photo-input');
+
+addButton?.addEventListener('click', () => fileInput?.click());
+
+fileInput?.addEventListener('change', async () => {
+  const files = [...(fileInput.files || [])];
+  fileInput.value = '';
+  for (const file of files) await addPhotoFromFile(file);
+});
+
+let dragDepth = 0;
+window.addEventListener('dragenter', (event) => {
+  event.preventDefault();
+  dragDepth += 1;
+  document.body.classList.add('is-dragging');
+});
+window.addEventListener('dragover', (event) => event.preventDefault());
+window.addEventListener('dragleave', (event) => {
+  event.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) document.body.classList.remove('is-dragging');
+});
+window.addEventListener('drop', async (event) => {
+  event.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove('is-dragging');
+  const files = [...(event.dataTransfer?.files || [])];
+  for (const file of files) await addPhotoFromFile(file);
+});
+
+document.getElementById('viewer-close')?.addEventListener('click', closeViewer);
+viewerEl?.querySelector('[data-close]')?.addEventListener('click', closeViewer);
+
+document.getElementById('viewer-delete')?.addEventListener('click', async () => {
+  const id = viewerEl?.dataset.photoId;
+  if (!id) return;
+  closeViewer();
+  await removePhoto(id);
+  photoRows.delete(id);
+  photoOrnaments.remove(id);
+  showToast('已经从树上取下来了');
+});
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeViewer();
+});
+
+hydratePhotos();
+
+// 调试钩子：只在 ?debug=1 时暴露，方便自动化测试定位挂饰
+if (query.get('debug') === '1') {
+  window.__xmas = { THREE, camera, photoOrnaments, openViewer, closeViewer, viewerEl };
+}
 
 /* ---------------- 尺寸与构图 ---------------- */
 
@@ -279,6 +437,7 @@ function animate() {
   snow.update(elapsed);
   sky.update(elapsed);
   bursts.update(dt);
+  photoOrnaments.update(elapsed, dt, camera.position);
 
   // 鼠标视差：树随指针轻微偏转，幅度必须小，否则会晕
   pointer.lerp(pointerTarget, 1 - Math.pow(0.0015, dt));
@@ -303,7 +462,7 @@ function animate() {
   fpsWindow += dt;
   if (fpsWindow >= 2) {
     const fps = frameCount / fpsWindow;
-    if (!degraded && elapsed > 5 && fps < 44 && qualityName !== 'low') {
+    if (allowAutoDegrade && !degraded && elapsed > 5 && fps < 44 && qualityName !== 'low') {
       degraded = true;
       degrade();
     }

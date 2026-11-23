@@ -81,7 +81,7 @@ body {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: clamp(28px, 6vh, 64px);
+  bottom: clamp(104px, 15vh, 148px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -174,8 +174,13 @@ body.is-ready .hud {
 /* ---------- 移动端 ---------- */
 
 @media (max-width: 640px) {
+  .toast {
+    top: max(16px, env(safe-area-inset-top));
+    font-size: 0.68rem;
+  }
+
   .hud {
-    bottom: max(24px, env(safe-area-inset-bottom));
+    bottom: max(100px, calc(env(safe-area-inset-bottom) + 82px));
     gap: 8px;
   }
 
@@ -200,4 +205,188 @@ body.is-ready .hud {
   .hud {
     transition-duration: 0.01s;
   }
+}
+
+
+/* ---------- 按钮与工具栏 ---------- */
+
+.btn {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 240, 196, 0.35);
+  background: rgba(9, 22, 20, 0.55);
+  color: #eafff6;
+  font-family: var(--sans);
+  font-size: 0.76rem;
+  letter-spacing: 0.16em;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: transform 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(127, 240, 196, 0.7);
+  background: rgba(16, 44, 36, 0.72);
+}
+
+.btn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.btn:focus-visible {
+  outline: 2px solid rgba(127, 240, 196, 0.75);
+  outline-offset: 3px;
+}
+
+.btn__plus {
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--glow);
+}
+
+.btn--quiet {
+  border-color: rgba(255, 128, 138, 0.32);
+  color: rgba(255, 208, 212, 0.92);
+  background: rgba(38, 10, 14, 0.45);
+}
+
+.btn--quiet:hover {
+  border-color: rgba(255, 128, 138, 0.65);
+  background: rgba(56, 14, 20, 0.65);
+}
+
+.toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(22px, 4vh, 40px);
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* ---------- 拖拽投放区 ---------- */
+
+.dropzone {
+  position: fixed;
+  inset: 16px;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(127, 240, 196, 0.55);
+  border-radius: 22px;
+  background: rgba(4, 10, 12, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+
+body.is-dragging .dropzone {
+  opacity: 1;
+}
+
+.dropzone p {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.24em;
+  color: #d8fff0;
+}
+
+/* ---------- 照片查看器 ---------- */
+
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.viewer[hidden] {
+  display: none;
+}
+
+.viewer__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 4, 8, 0.86);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.viewer__card {
+  position: relative;
+  margin: 0;
+  width: min(88vw, 520px);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  animation: cardIn 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.viewer__image {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 18px;
+  background: #060a10;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 30px 80px rgba(0, 0, 0, 0.65),
+    0 0 70px rgba(127, 240, 196, 0.14);
+}
+
+.viewer__actions {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+}
+
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- 轻提示 ---------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  top: 28px;
+  z-index: 30;
+  max-width: min(86vw, 520px);
+  padding: 9px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 240, 196, 0.25);
+  background: rgba(8, 16, 20, 0.88);
+  color: #e8fff8;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  letter-spacing: 0.06em;
+  text-align: center;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -10px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.toast.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }

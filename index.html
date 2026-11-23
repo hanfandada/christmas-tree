@@ -6,7 +6,7 @@
     <title>Merry Christmas · 会发光的圣诞树</title>
     <meta
       name="description"
-      content="一棵由粒子点亮的圣诞树，支持把照片挂上树梢。拖拽旋转，滚轮缩放。"
+      content="一棵由粒子点亮的圣诞树。把照片挂上树梢，点击查看。拖拽旋转，滚轮缩放。"
     />
     <meta name="theme-color" content="#04060d" />
     <link
@@ -32,8 +32,33 @@
 
       <header class="hud">
         <p class="hud__greeting" id="greeting">Merry Christmas</p>
-        <p class="hud__sub" id="sub">拖拽旋转 · 滚轮缩放 · 点击撒一把星火</p>
+        <p class="hud__sub" id="sub">点击挂饰看大图 · 拖入照片挂上树</p>
       </header>
+
+      <div class="toolbar">
+        <button class="btn btn--add" id="add-photo" type="button">
+          <span class="btn__plus" aria-hidden="true">+</span>
+          <span>添加照片</span>
+        </button>
+        <input id="photo-input" type="file" accept="image/*" multiple hidden />
+      </div>
+
+      <div class="dropzone" id="dropzone" aria-hidden="true">
+        <p>松开手，把照片挂上树</p>
+      </div>
+
+      <div class="viewer" id="viewer" hidden>
+        <div class="viewer__backdrop" data-close></div>
+        <figure class="viewer__card">
+          <img class="viewer__image" id="viewer-image" alt="挂饰照片" />
+          <figcaption class="viewer__actions">
+            <button class="btn btn--quiet" id="viewer-delete" type="button">删除这张</button>
+            <button class="btn" id="viewer-close" type="button">关闭</button>
+          </figcaption>
+        </figure>
+      </div>
+
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
       <div class="loader" id="loader">
         <div class="loader__ring" aria-hidden="true"></div>
