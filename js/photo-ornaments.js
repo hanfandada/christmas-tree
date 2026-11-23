@@ -52,7 +52,7 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
       vec3 n = normalize(vNormalW);
       float lambert = clamp(dot(n, normalize(vec3(0.45, 0.8, 0.55))), 0.0, 1.0);
       float rim = pow(1.0 - abs(n.z), 2.0);
-      vec3 color = uColor * (0.42 + 0.78 * lambert);
+      vec3 color = uColor * (0.45 + 0.62 * lambert);
       color += uColor * uGlow * 0.55;
       color += uColor * rim * 0.08;
       gl_FragColor = vec4(color, uOpacity);
@@ -117,7 +117,7 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
     const hsl = { h: 0, s: 0, l: 0 };
     color.getHSL(hsl);
     const sourceColor = hsl.s < 0.12 ? new THREE.Color(FESTIVE[order.length % FESTIVE.length]) : color;
-    const baseColor = sourceColor.clone().offsetHSL(0, 0.2, -0.03).multiplyScalar(0.66);
+    const baseColor = sourceColor.clone().offsetHSL(0, 0.24, -0.05).multiplyScalar(0.5);
 
     const bodyMaterial = makeMaterial(baseColor);
     const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
@@ -277,7 +277,7 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
       item.lidMaterial.uniforms.uOpacity.value = 1 - item.open * 0.65;
 
       // 盒身：打开时内部透出暖光
-      item.bodyMaterial.uniforms.uGlow.value = item.open * 0.55 + item.hover * 0.12 + 0.04 * pulse;
+      item.bodyMaterial.uniforms.uGlow.value = item.open * 0.5 + item.hover * 0.08 + 0.03 * pulse;
       item.glowMaterial.opacity = item.open * 0.85;
       item.glow.scale.setScalar(1.2 + item.open * 1.6);
 
