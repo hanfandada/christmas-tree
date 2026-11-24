@@ -148,6 +148,7 @@ trunk.setPixelRatio(pixelRatio);
 snow.setPixelRatio(pixelRatio);
 sky.setPixelRatio(pixelRatio);
 bursts.setPixelRatio(pixelRatio);
+photoOrnaments.setPixelRatio(pixelRatio);
 
 
 /* ---------------- 文案：支持 ?to=名字 定制 ---------------- */
@@ -226,7 +227,13 @@ canvas.addEventListener('pointerup', (event) => {
       );
       const worldPosition = photoOrnaments.getPosition(hitId);
       photoOrnaments.setOpen(hitId, true);
-      if (worldPosition) bursts.spawn(worldPosition, 1.1);
+      if (worldPosition) {
+        bursts.spawn(worldPosition, 1.5);
+        window.setTimeout(() => {
+          const again = photoOrnaments.getPosition(hitId);
+          if (again) bursts.spawn(again, 1.0);
+        }, 150);
+      }
       photoOrnaments.setHover(null);
       canvas.classList.remove('is-pointing');
       // 先让盒盖弹开一点，照片再飞出来
@@ -458,6 +465,7 @@ function degrade() {
   snow.setPixelRatio(pixelRatio);
   sky.setPixelRatio(pixelRatio);
   bursts.setPixelRatio(pixelRatio);
+  photoOrnaments.setPixelRatio(pixelRatio);
 }
 
 function fallback(message) {
