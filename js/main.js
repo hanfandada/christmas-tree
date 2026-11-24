@@ -18,7 +18,7 @@ import { createGround } from './ground.js';
 import { createPhotoOrnaments } from './photo-ornaments.js';
 import {
   blobToAverageColor,
-  fileToSquareBlob,
+  fileToPhotoBlob,
   listPhotos,
   removePhoto,
   savePhoto,
@@ -269,7 +269,7 @@ function showToast(text) {
   toastTimer = setTimeout(() => toastEl.classList.remove('is-visible'), 2600);
 }
 
-function openViewer(id, origin = null) {
+async function openViewer(id, origin = null) {
   const row = photoRows.get(id);
   if (!row) return;
   if (viewerUrl) URL.revokeObjectURL(viewerUrl);
@@ -278,6 +278,16 @@ function openViewer(id, origin = null) {
   viewerEl.hidden = false;
   viewerEl.dataset.photoId = id;
   controls.autoRotate = false;
+
+  // 照片按原比例显示，加载完成前尺寸是 0，先解码再量尺寸，飞出动画才不会算错
+  try {
+    await viewerImage.decode();
+  } catch {
+    // 解码失败就退化成直接出现
+  }
+
+  // 解码期间用户可能已经关掉了
+  if (viewerEl.hidden || viewerEl.dataset.photoId !== id) return;
 
   requestAnimationFrame(() => {
     viewerEl.classList.add('is-open');
@@ -327,9 +337,9 @@ async function addPhotoFromFile(file) {
   }
 
   try {
-    const square = await fileToSquareBlob(file);
-    const row = await savePhoto(square);
-    const color = await blobToAverageColor(square);
+    const photo = await fileToPhotoBlob(file);
+    const row = await savePhoto(photo);
+    const color = await blobToAverageColor(photo);
     photoRows.set(row.id, row);
     photoOrnaments.add(row.id, color, {
       spawnFrom: camera.position.clone(),

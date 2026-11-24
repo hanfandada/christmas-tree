@@ -336,7 +336,7 @@ body.is-dragging .dropzone {
 .viewer__card {
   position: relative;
   margin: 0;
-  width: min(88vw, 520px);
+  width: min(92vw, 720px);
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -344,9 +344,14 @@ body.is-dragging .dropzone {
 }
 
 .viewer__image {
-  width: 100%;
-  aspect-ratio: 1;
-  object-fit: cover;
+  /* 保持照片原始比例：只限制最大尺寸，不裁切 */
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: min(72vh, 720px);
+  margin: 0 auto;
+  object-fit: contain;
   border-radius: 18px;
   background: #060a10;
   box-shadow:

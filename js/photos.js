@@ -4,7 +4,7 @@ import * as THREE from 'three';
  * 照片的本地存储与纹理化。
  *
  * 全部在浏览器里完成，照片不会离开这台设备：
- *  - 选中的图片先裁成正方形、压到 512px，再存进 IndexedDB
+ *  - 选中的图片按原比例缩到长边 1024px（不裁切），再存进 IndexedDB
  *  - 读取时把 Blob 转成 three 纹理
  *  - 若浏览器禁用 IndexedDB，则退化为内存存储（刷新即失）
  */
@@ -12,7 +12,7 @@ import * as THREE from 'three';
 const DB_NAME = 'xmas-tree';
 const DB_VERSION = 1;
 const STORE = 'photos';
-const MAX_EDGE = 512;
+const MAX_EDGE = 1024;
 
 let dbPromise = null;
 let memoryOnly = false;
@@ -114,20 +114,23 @@ export function isMemoryOnly() {
   return memoryOnly;
 }
 
-/** 把用户选的文件裁成正方形并压缩，返回 JPEG Blob */
-export async function fileToSquareBlob(file) {
+/**
+ * 把用户选的文件等比缩小并压缩，返回 JPEG Blob。
+ * 只缩不放：长边超过 1024px 才缩，原始比例和构图完整保留，不裁切。
+ */
+export async function fileToPhotoBlob(file) {
   const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+
   const canvas = document.createElement('canvas');
-  canvas.width = MAX_EDGE;
-  canvas.height = MAX_EDGE;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext('2d');
 
-  // cover：短边填满，多出来的居中裁掉
-  const scale = Math.max(MAX_EDGE / bitmap.width, MAX_EDGE / bitmap.height);
-  const width = bitmap.width * scale;
-  const height = bitmap.height * scale;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(bitmap, (MAX_EDGE - width) / 2, (MAX_EDGE - height) / 2, width, height);
+  ctx.drawImage(bitmap, 0, 0, width, height);
 
   if (bitmap.close) bitmap.close();
 
