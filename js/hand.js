@@ -29,7 +29,9 @@ const HOLD_MS = 100; // 姿势稳住多久触发：一摆好就出，尽量不�
 const COOLDOWN_MS = 700; // 两次触发的最短间隔
 const MIN_STREAK = 2; // 至少连续几帧判定成功
 const RELEASE_STREAK = 2; // 连续几帧没姿势才重新上膛
-const PALM_HOLD_MS = 260; // 握拳要稳住这么久，张开才算数（太短会误触）
+const PALM_HOLD_MS = 180; // 握拳要稳住这么久，张开才算数（太短会误触）
+const FIST_TIMEOUT = 3000; // 握拳之后多久还没张开就作废
+const COMBO_GRACE = 900; // 组合技触发后这段时间里屏蔽比心，免得同一下炸两颗心
 
 // 送进模型前先缩到这个宽度：640×480 直接喂太浪费。
 // 256 更省算力，但真机上小图更容易丢手，先用回 320 这个验证过的值。
@@ -61,13 +63,17 @@ export const THRESHOLD = {
   thumbOut: 0.5,
   thumbRise: 0.12,
   thumbCurled: 1.0,
-  fistCurl: 0.88,
-  fistThumbTuck: 0.5,
-  openCurl: 1.02,
-  openThumbOut: 0.45,
+  // 握拳：真手上四指很难蜷到"比值 0.8"那么狠，而且总有某一根蜷得不够，
+  // 所以同时看"最差的那根"和"平均"，再放宽一档
+  fistCurl: 1.0,
+  fistAvg: 0.88,
+  fistThumbTuck: 0.7,
+  openCurl: 0.98,
+  openThumbOut: 0.4,
   pinchGap: 0.34,
   pinchThumbOut: 0.22,
-  pinchCurl: 0.95,
+  // 捏合时另外三指经常是半弯的，不能要求它们必须伸直
+  pinchCurl: 0.8,
 };
 
 function dist(a, b) {
@@ -151,13 +157,17 @@ export function analyzeFist(lm) {
   const scale = handScale(lm);
   const curls = fingerCurls(lm);
   const maxCurl = Math.max(...curls);
+  const avgCurl = (curls[0] + curls[1] + curls[2] + curls[3]) / 4;
   const thumbTuck = thumbSpread(lm, scale);
 
   // 只看"四指蜷起来 + 拇指收回来"：握拳时拇指指尖压在食指中段，
   // 会比拇指根高，所以不能拿"拇指朝上"来排除竖大拇指，只能看拇指伸没伸出去
-  const isFist = maxCurl < THRESHOLD.fistCurl && thumbTuck < THRESHOLD.fistThumbTuck;
+  const isFist =
+    maxCurl < THRESHOLD.fistCurl &&
+    avgCurl < THRESHOLD.fistAvg &&
+    thumbTuck < THRESHOLD.fistThumbTuck;
 
-  return { isFist, maxCurl, thumbTuck };
+  return { isFist, maxCurl, avgCurl, thumbTuck };
 }
 
 /** 张开手掌：四指全伸、拇指也张开 */
@@ -314,6 +324,7 @@ export function createHandTracker({
   let palmSince = 0;
   let lastPalmFire = -Infinity;
   let lastPinchFire = -Infinity;
+  let lastComboAt = -Infinity;
   let lastPalmLatency = null;
 
   function setStatus(status, error) {
@@ -515,11 +526,11 @@ export function createHandTracker({
   /**
    * 组合技序列：握拳 → 张开（炸开）→ 捏合（成字）。
    *
-   * 设计要点：
-   *  - 只有"先握拳、稳住 PALM_HOLD_MS、再张开"才算完成第一步，
-   *    单纯张开手掌什么都不做，挥手和打字都不会误触
-   *  - 张开之后进入 mixed，等捏合；捏合要避开张开的一瞬间（那是同一套手指）
-   *  - 手放下（既不是拳、也不是张开、也不是捏合）几帧就复位
+   * 两个真机上踩到的坑：
+   *  - 握拳到张开之间会经过几帧"既不是拳也不是完全张开"，不能因为这几帧就作废，
+   *    改成给整段一个超时（FIST_TIMEOUT），中间怎么动都行
+   *  - 捏合和比心的手型几乎一样，所以进入 mixed 之后要屏蔽比心；
+   *    而且捏合触发之后那几帧还要继续屏蔽，不然会同时炸一颗心
    * @returns {'open'|'pinch'|null} 这一帧完成的那一步
    */
   function updatePalm(now, fist, open, pinch) {
@@ -535,18 +546,18 @@ export function createHandTracker({
       return null;
     }
 
-    // 手放下来 / 摆成别的姿势：这次作废
-    if (neutralStreak >= 4) {
-      if (palmStage !== 'idle') palmStage = 'idle';
-      return null;
-    }
-
     if (palmStage === 'fist') {
+      // 中间那些"半握半开"的过渡帧不作废，只给一个总时长上限
+      if (now - palmSince > FIST_TIMEOUT) {
+        palmStage = 'idle';
+        return null;
+      }
       if (fistStreak > 0) return null;
       if (openStreak < MIN_STREAK) return null;
       if (now - palmSince < PALM_HOLD_MS) return null;
       if (now - lastPalmFire < COOLDOWN_MS) return null;
       lastPalmFire = now;
+      lastComboAt = now;
       lastPalmLatency = Math.round(now - palmSince);
       palmStage = 'mixed';
       palmSince = now;
@@ -554,10 +565,15 @@ export function createHandTracker({
     }
 
     if (palmStage === 'mixed') {
-      // 张开的那一下手指本来就是并拢的，先留一个窗口再做捏合判定
+      // 手彻底放下（连续好几帧什么姿势都不是）才算走开
+      if (neutralStreak >= 10) {
+        palmStage = 'idle';
+        return null;
+      }
       if (now - palmSince < PALM_HOLD_MS) return null;
       if (pinchStreak >= MIN_STREAK && now - lastPinchFire >= COOLDOWN_MS) {
         lastPinchFire = now;
+        lastComboAt = now;
         palmStage = 'idle';
         return 'pinch';
       }
@@ -587,21 +603,24 @@ export function createHandTracker({
 
     const pos = palmScreen(lm);
 
+    // ⚠️ 必须在 updatePalm 之前取：捏合触发时它会把 palmStage 改回 idle，
+    // 之后再判断就会把这一帧当成"不在组合技里"，于是捏合同时炸出一颗心
+    const wasInCombo = palmStage === 'mixed';
+
     // 序列手势独立于下面比心 / 大拇指的"保持触发"
     const comboStep = updatePalm(now, fist, open, pinch);
     if (comboStep === 'open') {
-      // 这里的 latency 含 260ms 的刻意蓄力，不写进 heart/thumb 的响应耗时里
       onPalm?.({ ...pos, latency: lastPalmLatency });
     } else if (comboStep === 'pinch') {
       onPinch?.({ ...pos });
     }
 
-    // 组合技期间不判比心 / 大拇指：捏合的手势本来就接近比心，会互相抢
-    const inCombo = palmStage === 'mixed';
+    // 组合技期间、以及刚触发完的 0.9 秒内，都不判比心 / 大拇指
+    const suppress = wasInCombo || now - lastComboAt < COMBO_GRACE;
     let kind = null;
-    if (!inCombo && heart.isHeart) kind = 'heart';
-    else if (!inCombo && thumb.isThumbUp) kind = 'thumb';
-    else if (inCombo && pinch.isPinch) kind = 'pinch';
+    if (!suppress && heart.isHeart) kind = 'heart';
+    else if (!suppress && thumb.isThumbUp) kind = 'thumb';
+    else if (pinch.isPinch && suppress) kind = 'pinch';
     else if (fist.isFist) kind = 'fist';
     else if (open.isOpen) kind = 'open';
 

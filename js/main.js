@@ -711,7 +711,8 @@ const handTracker = createHandTracker({
       } catch {
         // 隐私模式存不了，最多下次多等一会儿
       }
-      showToast('比心、竖大拇指，或者握拳张开再捏一下');
+      // 拳头比张开的手难检测，先张手让模型锁定，再握起来跟踪才稳
+      showToast('先张手让摄像头看到你，再比心 / 握拳 / 捏合');
     } else if (gestureMessages[status]) {
       showToast(gestureMessages[status]);
     }
