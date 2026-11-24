@@ -31,8 +31,20 @@ const MIN_STREAK = 2; // 至少连续几帧判定成功
 const RELEASE_STREAK = 2; // 连续几帧没姿势才重新上膛
 const PALM_HOLD_MS = 260; // 握拳要稳住这么久，张开才算数（太短会误触）
 
-// 送进模型前先缩到这个宽度：640×480 直接喂太浪费，缩一半速度明显更快
-const PROCESS_WIDTH = 320;
+// 送进模型前先缩到这个宽度：640×480 直接喂太浪费。
+// 256 比 320 少 36% 的像素，判定用的是比例（和分辨率无关），所以阈值不用改。
+const PROCESS_WIDTH = 256;
+
+/**
+ * 手部 ROI：只把手附近那块送进模型，远处的手在画面里只占一小片，
+ * 整幅送去等于把 90% 的算力浪费在背景上。
+ */
+const ROI = {
+  scale: 1.9, // 手框外扩倍数
+  min: 0.34, // ROI 最小占画面比例，再小就容易丢手
+  edge: 0.34, // 手中心进入 ROI 边缘这么多就开始重新居中
+  lost: 2, // 连续丢几帧就退回全幅
+};
 
 /**
  * 判定阈值都放这里，真机手感不对就调这几个数。
@@ -53,6 +65,9 @@ export const THRESHOLD = {
   fistThumbTuck: 0.5,
   openCurl: 1.02,
   openThumbOut: 0.45,
+  pinchGap: 0.34,
+  pinchThumbOut: 0.22,
+  pinchCurl: 0.95,
 };
 
 function dist(a, b) {
@@ -158,6 +173,72 @@ export function analyzeOpenPalm(lm) {
   return { isOpen, minCurl, thumbOut };
 }
 
+/** 模型给的是"裁剪块内"的归一化坐标，换算回整幅画面 */
+export function unprojectLandmarks(lm, crop) {
+  if (!lm || !crop) return lm;
+  for (const p of lm) {
+    p.x = crop.x + p.x * crop.w;
+    p.y = crop.y + p.y * crop.h;
+  }
+  return lm;
+}
+
+/** 21 个关键点的包围盒 */
+export function handBounds(lm) {
+  let minX = 1;
+  let maxX = 0;
+  let minY = 1;
+  let maxY = 0;
+  for (const p of lm) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, maxX, minY, maxY };
+}
+
+/** 由手框算出下一个 ROI；手还在原来的框里就原样返回，保持裁剪稳定 */
+export function nextRoi(bounds, current) {
+  const cx = (bounds.minX + bounds.maxX) / 2;
+  const cy = (bounds.minY + bounds.maxY) / 2;
+  const span = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) * ROI.scale;
+  const size = Math.min(1, Math.max(ROI.min, span));
+
+  if (current) {
+    const inside =
+      Math.abs(cx - (current.x + current.size / 2)) < (current.size * ROI.edge) / 2 &&
+      Math.abs(cy - (current.y + current.size / 2)) < (current.size * ROI.edge) / 2 &&
+      Math.abs(size - current.size) < current.size * 0.5;
+    if (inside) return current;
+  }
+
+  return {
+    x: Math.min(1 - size, Math.max(0, cx - size / 2)),
+    y: Math.min(1 - size, Math.max(0, cy - size / 2)),
+    size,
+  };
+}
+
+/**
+ * 捏合：拇指指尖和食指指尖碰在一起，其余三指不蜷（这就是和比心的区别）。
+ * 比心要求中指 / 无名指 / 小指收起来，捏合时它们是伸开的。
+ */
+export function analyzePinch(lm) {
+  if (!lm || lm.length < 21) return { isPinch: false };
+
+  const scale = handScale(lm);
+  const curls = fingerCurls(lm);
+  const gap = dist(lm[4], lm[8]) / scale;
+  const thumbOut = thumbSpread(lm, scale);
+  const others = Math.min(curls[1], curls[2], curls[3]);
+
+  const isPinch =
+    gap < THRESHOLD.pinchGap && thumbOut > THRESHOLD.pinchThumbOut && others > THRESHOLD.pinchCurl;
+
+  return { isPinch, gap, others };
+}
+
 /** 手掌中心在屏幕上的位置（摄像头是镜像的，x 要翻） */
 function palmScreen(lm) {
   const ids = [0, 5, 9, 13, 17];
@@ -185,7 +266,16 @@ function errorCode(error) {
   return 'failed';
 }
 
-export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, onStatus } = {}) {
+export function createHandTracker({
+  video,
+  onHeart,
+  onThumb,
+  onPalm,
+  onPinch,
+  onTrack,
+  onStatus,
+  roi: roiEnabled = true,
+} = {}) {
   let landmarker = null;
   let stream = null;
   let running = false;
@@ -200,6 +290,11 @@ export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, on
   let prewarming = null;
   let processCanvas = null;
   let processCtx = null;
+  let roi = null; // { x, y, size } 归一化坐标
+  let lostFrames = 0;
+  let useRoi = roiEnabled !== false;
+  let inferMs = 0;
+  let inferAvg = 0;
 
   // 手势状态机（比心 / 大拇指：保持触发）
   let currentKind = null;
@@ -209,13 +304,15 @@ export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, on
   let lastFire = -Infinity;
   let armed = true;
 
-  // 序列状态机（握拳 → 张开）
+  // 序列状态机（握拳 → 张开 → 捏合）
   let fistStreak = 0;
   let openStreak = 0;
+  let pinchStreak = 0;
   let neutralStreak = 0;
-  let palmStage = 'idle'; // idle | fist | spent
+  let palmStage = 'idle'; // idle | fist | mixed
   let palmSince = 0;
   let lastPalmFire = -Infinity;
+  let lastPinchFire = -Infinity;
   let lastPalmLatency = null;
 
   function setStatus(status, error) {
@@ -291,42 +388,83 @@ export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, on
 
   /* ---------------- 每帧识别 ---------------- */
 
-  /** 把视频帧等比缩到 320 宽再送模型：省掉一大半上传/缩放开销 */
+  /**
+   * 把视频帧缩到 PROCESS_WIDTH 送模型；开着 ROI 时只裁手附近那块。
+   * 返回这一帧实际裁的是哪一块（归一化坐标），后面要靠它把关关键点换算回全幅。
+   */
   function prepareFrame() {
     const vw = video.videoWidth || 640;
     const vh = video.videoHeight || 480;
-    const width = Math.min(PROCESS_WIDTH, vw);
-    const height = Math.max(1, Math.round((vh / vw) * width));
 
     if (!processCanvas) {
       processCanvas = document.createElement('canvas');
       processCtx = processCanvas.getContext('2d');
     }
+
+    // ROI 是归一化正方形，换成像素后自然就是视频的宽高比，不会把画面拉变形
+    const crop = roi
+      ? {
+          x: roi.x,
+          y: roi.y,
+          w: roi.size,
+          h: roi.size,
+        }
+      : null;
+
+    const sw = crop ? Math.max(8, Math.round(crop.w * vw)) : vw;
+    const sh = crop ? Math.max(8, Math.round(crop.h * vh)) : vh;
+    const sx = crop ? Math.round(crop.x * vw) : 0;
+    const sy = crop ? Math.round(crop.y * vh) : 0;
+
+    const width = Math.max(32, Math.min(PROCESS_WIDTH, sw));
+    const height = Math.max(1, Math.round((sh / sw) * width));
+
     if (processCanvas.width !== width || processCanvas.height !== height) {
       processCanvas.width = width;
       processCanvas.height = height;
     }
-    processCtx.drawImage(video, 0, 0, width, height);
-    return processCanvas;
+    processCtx.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
+    return crop;
+  }
+
+  /** 手快出框或明显变大变小时才重新居中，避免每帧都动导致跟踪丢失 */
+  function updateRoi(lm) {
+    if (!useRoi || !lm || lm.length < 21) return;
+    roi = nextRoi(handBounds(lm), roi);
   }
 
   function runDetection() {
     if (!running || document.hidden || !video || video.readyState < 2) return;
 
-    const frame = prepareFrame();
+    const crop = prepareFrame();
     // 用视频自己的时间戳，比 rAF 时间稳，跟踪不会因为掉帧乱跳
     const raw = video.currentTime * 1000;
     const timestamp = Math.max(raw, lastTimestamp + 1);
     lastTimestamp = timestamp;
 
     frames += 1;
+    const started = performance.now();
     let result = null;
     try {
-      result = landmarker.detectForVideo(frame, timestamp);
+      result = landmarker.detectForVideo(processCanvas, timestamp);
     } catch {
       return; // 偶尔会有帧没准备好，跳过就好
     }
-    handleLandmarks(result?.landmarks?.[0] || null, performance.now());
+    inferMs = performance.now() - started;
+    inferAvg += (inferMs - inferAvg) * 0.15;
+
+    const hand = unprojectLandmarks(result?.landmarks?.[0] || null, crop);
+
+    if (hand) {
+      lostFrames = 0;
+      updateRoi(hand);
+    } else if (roi && ++lostFrames >= ROI.lost) {
+      // 连着两帧没手：可能是手出了裁剪框，退回全幅再找
+      roi = null;
+      lostFrames = 0;
+    }
+
+    handleLandmarks(hand, performance.now());
   }
 
   /**
@@ -366,47 +504,62 @@ export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, on
   function resetPalm() {
     fistStreak = 0;
     openStreak = 0;
+    pinchStreak = 0;
     neutralStreak = 0;
     palmStage = 'idle';
   }
 
   /**
-   * 握拳 → 张开。
+   * 组合技序列：握拳 → 张开（炸开）→ 捏合（成字）。
    *
    * 设计要点：
-   *  - 只有"先握拳、稳住 PALM_HOLD_MS、再张开"才算完成，单纯张开手掌什么都不做
-   *  - 触发后进入 spent，必须重新握一次拳才有下一次，同一个手势不会连弹
-   *  - 中间有一两帧没识别到不算中断（neutralStreak 兜底），手放下来才作废
-   * @returns {boolean} 这一帧是否完成了一次完整手势
+   *  - 只有"先握拳、稳住 PALM_HOLD_MS、再张开"才算完成第一步，
+   *    单纯张开手掌什么都不做，挥手和打字都不会误触
+   *  - 张开之后进入 mixed，等捏合；捏合要避开张开的一瞬间（那是同一套手指）
+   *  - 手放下（既不是拳、也不是张开、也不是捏合）几帧就复位
+   * @returns {'open'|'pinch'|null} 这一帧完成的那一步
    */
-  function updatePalm(now, fist, open) {
+  function updatePalm(now, fist, open, pinch) {
     fistStreak = fist.isFist ? fistStreak + 1 : 0;
     openStreak = open.isOpen ? openStreak + 1 : 0;
-    neutralStreak = !fist.isFist && !open.isOpen ? neutralStreak + 1 : 0;
+    pinchStreak = pinch.isPinch ? pinchStreak + 1 : 0;
+    neutralStreak = !fist.isFist && !open.isOpen && !pinch.isPinch ? neutralStreak + 1 : 0;
 
-    // 握拳：连续两帧确认后再开始计时，单帧抖动不进蓄力
+    // 新的一拳：重新开始一轮（组合技中途也能用它打断）
     if (palmStage !== 'fist' && fistStreak >= MIN_STREAK) {
       palmStage = 'fist';
       palmSince = now;
-      return false;
+      return null;
     }
 
-    // 手放下来 / 摆成别的姿势：这次蓄力作废，得重新握
-    if (neutralStreak >= 3) {
-      palmStage = 'idle';
-      return false;
+    // 手放下来 / 摆成别的姿势：这次作废
+    if (neutralStreak >= 4) {
+      if (palmStage !== 'idle') palmStage = 'idle';
+      return null;
     }
 
-    if (palmStage !== 'fist') return false;
-    if (fistStreak > 0) return false; // 还握着拳，等张开
-    if (openStreak < MIN_STREAK) return false; // 还没完全张开
-    if (now - palmSince < PALM_HOLD_MS) return false; // 握得太短，当挥手
-    if (now - lastPalmFire < COOLDOWN_MS) return false;
+    if (palmStage === 'fist') {
+      if (fistStreak > 0) return null;
+      if (openStreak < MIN_STREAK) return null;
+      if (now - palmSince < PALM_HOLD_MS) return null;
+      if (now - lastPalmFire < COOLDOWN_MS) return null;
+      lastPalmFire = now;
+      lastPalmLatency = Math.round(now - palmSince);
+      palmStage = 'mixed';
+      palmSince = now;
+      return 'open';
+    }
 
-    palmStage = 'spent';
-    lastPalmFire = now;
-    lastPalmLatency = Math.round(now - palmSince);
-    return true;
+    if (palmStage === 'mixed') {
+      // 张开的那一下手指本来就是并拢的，先留一个窗口再做捏合判定
+      if (now - palmSince < PALM_HOLD_MS) return null;
+      if (pinchStreak >= MIN_STREAK && now - lastPinchFire >= COOLDOWN_MS) {
+        lastPinchFire = now;
+        palmStage = 'idle';
+        return 'pinch';
+      }
+    }
+    return null;
   }
 
   function handleLandmarks(lm, now) {
@@ -426,19 +579,26 @@ export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, on
     const thumb = analyzeThumbUp(lm);
     const fist = analyzeFist(lm);
     const open = analyzeOpenPalm(lm);
-    lastMetrics = { heart, thumb, fist, open };
+    const pinch = analyzePinch(lm);
+    lastMetrics = { heart, thumb, fist, open, pinch };
 
     const pos = palmScreen(lm);
 
     // 序列手势独立于下面比心 / 大拇指的"保持触发"
-    if (updatePalm(now, fist, open)) {
+    const comboStep = updatePalm(now, fist, open, pinch);
+    if (comboStep === 'open') {
       // 这里的 latency 含 260ms 的刻意蓄力，不写进 heart/thumb 的响应耗时里
       onPalm?.({ ...pos, latency: lastPalmLatency });
+    } else if (comboStep === 'pinch') {
+      onPinch?.({ ...pos });
     }
 
+    // 组合技期间不判比心 / 大拇指：捏合的手势本来就接近比心，会互相抢
+    const inCombo = palmStage === 'mixed';
     let kind = null;
-    if (heart.isHeart) kind = 'heart';
-    else if (thumb.isThumbUp) kind = 'thumb';
+    if (!inCombo && heart.isHeart) kind = 'heart';
+    else if (!inCombo && thumb.isThumbUp) kind = 'thumb';
+    else if (inCombo && pinch.isPinch) kind = 'pinch';
     else if (fist.isFist) kind = 'fist';
     else if (open.isOpen) kind = 'open';
 
@@ -462,7 +622,7 @@ export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, on
 
     const held = now - since;
     const progress = armed ? Math.min(1, held / HOLD_MS) : 0;
-    const palmKind = kind === 'fist' || kind === 'open';
+    const palmKind = kind === 'fist' || kind === 'open' || kind === 'pinch';
     // 拳头 / 张开手掌只驱动准星蓄力，真正触发在 updatePalm 里
     const displayProgress = palmKind
       ? palmStage === 'fist'
@@ -523,6 +683,10 @@ export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, on
       lastInfer = 0;
       lastTimestamp = 0;
       lastVideoTime = -1;
+      roi = null;
+      lostFrames = 0;
+      inferMs = 0;
+      inferAvg = 0;
       currentKind = null;
       since = 0;
       streak = 0;
@@ -550,6 +714,8 @@ export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, on
     starting = false;
     cancelFrames();
     stopCamera();
+    roi = null;
+    lostFrames = 0;
     pointerOff();
     setStatus('idle');
   }
@@ -572,6 +738,17 @@ export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, on
     },
     get latency() {
       return lastLatency;
+    },
+    /** 单帧推理耗时（毫秒），面板里用来看 256 / ROI 到底省了多少 */
+    get inferMs() {
+      return Math.round(inferMs * 10) / 10;
+    },
+    get inferAvg() {
+      return Math.round(inferAvg * 10) / 10;
+    },
+    /** 当前 ROI 占画面多少（1 = 全幅），调试用 */
+    get roiSize() {
+      return roi ? Math.round(roi.size * 100) / 100 : 1;
     },
     get warm() {
       return !!landmarker;
@@ -599,6 +776,7 @@ export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, on
     analyzeThumb: analyzeThumbUp,
     analyzeFist,
     analyzeOpen: analyzeOpenPalm,
+    analyzePinch,
     get palmStage() {
       return palmStage;
     },

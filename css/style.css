@@ -103,6 +103,13 @@ body.is-ready .hud {
   transform: translateY(0);
 }
 
+/* 粒子拼字的时候把文案收起来，避免同一句话出现两次 */
+body.is-composing .hud {
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
 .hud__greeting {
   margin: 0;
   font-family: var(--serif);

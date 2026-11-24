@@ -19,6 +19,8 @@ import { createPhotoOrnaments } from './photo-ornaments.js';
 import { createHandTracker } from './hand.js';
 import { createGestureFx } from './gesture-fx.js';
 import { createSanta } from './santa.js';
+import { createCompose } from './compose.js';
+import { createMusic, renderPreview } from './audio.js';
 import {
   blobToAverageColor,
   fileToPhotoBlob,
@@ -159,6 +161,24 @@ const santa = createSanta({
 });
 world.add(santa.group);
 
+// 组合技：整棵树的粒子炸开 → 收拢成 "Merry Christmas"
+const compose = createCompose({
+  count: Math.round(quality.tree * 0.26),
+  reducedMotion,
+});
+world.add(compose.group);
+
+// 粒子云接管画面时要一起藏起来的真实场景
+const sceneObjects = [
+  tree.group,
+  ornaments.group,
+  star.group,
+  trunk.group,
+  photoOrnaments.group,
+  ground.group,
+];
+let sceneHidden = false;
+
 /* 像素比同步给所有着色器 */
 tree.setPixelRatio(pixelRatio);
 trunk.setPixelRatio(pixelRatio);
@@ -167,6 +187,7 @@ sky.setPixelRatio(pixelRatio);
 bursts.setPixelRatio(pixelRatio);
 photoOrnaments.setPixelRatio(pixelRatio);
 santa.setPixelRatio(pixelRatio);
+compose.setPixelRatio(pixelRatio);
 
 
 /* ---------------- 文案：支持 ?to=名字 定制 ---------------- */
@@ -355,49 +376,6 @@ function closeViewer() {
   controls.autoRotate = !reducedMotion;
 }
 
-/* 手势：握拳 → 张开，照片从掌心飞出来 */
-
-let lastPoppedId = null;
-
-/** 树上确实有原始数据的照片（顺序 = 挂上树的先后） */
-function photosOnTree() {
-  return photoOrnaments.getIds().filter((id) => photoRows.has(id));
-}
-
-function popPhotoFromHand(x, y) {
-  gestureFx.burst('pulse', x, y);
-
-  // 查看器开着的时候，同一个手势用来把它收回去
-  if (!viewerEl.hidden) {
-    closeViewer();
-    return;
-  }
-
-  const ids = photosOnTree();
-  if (!ids.length) {
-    showToast('先挂一张照片，握拳再张开，它就会从手里飞出来');
-    return;
-  }
-
-  // 刚挂上树的优先，但别连着两次弹同一张
-  let id = ids[ids.length - 1];
-  if (id === lastPoppedId && ids.length > 1) id = ids[ids.length - 2];
-  lastPoppedId = id;
-
-  const worldPosition = photoOrnaments.getPosition(id);
-  photoOrnaments.setHover(null);
-  photoOrnaments.setOpen(id, true);
-  if (worldPosition) {
-    bursts.spawn(worldPosition, 1.5);
-    window.setTimeout(() => {
-      const again = photoOrnaments.getPosition(id);
-      if (again) bursts.spawn(again, 0.9);
-    }, 150);
-  }
-  // 让盒盖先弹开一点，照片再从掌心飞出来放大
-  window.setTimeout(() => openViewer(id, { x, y, size: 96 }), 320);
-}
-
 /* ---------------- 过场：圣诞老人雪橇 ---------------- */
 
 const forceSanta = query.get('santa') === '1';
@@ -443,10 +421,15 @@ function framePhoto(bitmap) {
   return canvas;
 }
 
-/** 把树上最近挂的几张照片转成贴图，跟着雪橇飞一圈再送回树上 */
-async function buildSantaPhotos() {
-  const ids = photosOnTree().slice(-6);
-  const entries = [];
+/** 树上确实有原始数据的照片（顺序 = 挂上树的先后） */
+function photosOnTree() {
+  return photoOrnaments.getIds().filter((id) => photoRows.has(id));
+}
+
+/** 把树上最近挂的几张照片画成带金框的贴图卡片（雪橇过场和组合技共用） */
+async function buildPhotoCards(limit) {
+  const ids = photosOnTree().slice(-limit);
+  const cards = [];
   for (const id of ids) {
     const row = photoRows.get(id);
     if (!row) continue;
@@ -454,30 +437,37 @@ async function buildSantaPhotos() {
       // 走一遍 canvas：ImageBitmap 直接当贴图在部分浏览器里会上下翻，
       // 画到 canvas 上就是标准的 CanvasTexture 行为
       const bitmap = await createImageBitmap(row.blob);
-      const surface = framePhoto(bitmap);
+      const canvas = framePhoto(bitmap);
       if (bitmap.close) bitmap.close();
 
-      const texture = new THREE.CanvasTexture(surface);
+      const texture = new THREE.CanvasTexture(canvas);
       texture.colorSpace = THREE.SRGBColorSpace;
-      entries.push({
+      cards.push({
         id,
         texture,
-        aspect: surface.width / Math.max(1, surface.height),
+        canvas,
+        aspect: canvas.width / Math.max(1, canvas.height),
         target: photoOrnaments.getPosition(id),
       });
     } catch (error) {
-      console.warn('有一张照片没能跟上雪橇', error);
+      console.warn('有一张照片没能用上', error);
     }
   }
-  return entries;
+  return cards;
 }
 
 async function playSanta({ force = false } = {}) {
-  if (santa.active || santaPending) return false;
+  if (santa.active || santaPending || compose.active) return false;
   if (reducedMotion && !force) return false;
   santaPending = true;
   try {
-    const entries = await buildSantaPhotos();
+    const cards = await buildPhotoCards(6);
+    const entries = cards.map((card) => ({
+      id: card.id,
+      texture: card.texture,
+      aspect: card.aspect,
+      target: card.target,
+    }));
     santa.play(entries, elapsed);
     showToast(entries.length ? `圣诞老人送回了 ${entries.length} 张照片` : '圣诞老人从树上飞过去了');
     return true;
@@ -523,6 +513,70 @@ async function hydratePhotos() {
     console.error(error);
   }
 }
+
+/* ---------------- 组合技：粒子炸开 → 拼成 Merry Christmas ---------------- */
+
+const COMBO_WINDOW = 8000; // 炸开之后多久内要捏合
+const TEXT_HOLD = 4200; // 成字后停留多久自动散掉
+
+let comboTimer = 0;
+let composeBusy = false;
+
+async function openCompose() {
+  if (compose.active || composeBusy) return false;
+  composeBusy = true;
+  // 雪橇过场和粒子拼字同时出现会互相打架，先收掉
+  santa.stop();
+  try {
+    const cards = await buildPhotoCards(8);
+    const photoList = cards.map((card) => ({
+      id: card.id,
+      texture: card.texture,
+      aspect: card.aspect,
+      // 从各自的礼物位置飞出来
+      from: card.target ? world.worldToLocal(card.target.clone()) : new THREE.Vector3(),
+      sampleCanvas: card.canvas,
+    }));
+
+    const ok = compose.open({
+      treePositions: tree.getPositions(),
+      photoList,
+      timer: elapsed,
+    });
+
+    if (!ok) {
+      for (const card of cards) card.texture.dispose();
+      return false;
+    }
+
+    clearTimeout(comboTimer);
+    comboTimer = window.setTimeout(() => endCompose(), COMBO_WINDOW);
+    showToast('捏一下手指，把它们拼成 Merry Christmas');
+    return true;
+  } finally {
+    composeBusy = false;
+  }
+}
+
+function composeToText() {
+  if (!compose.active || compose.stage !== 'open') return false;
+  compose.setText(elapsed);
+  clearTimeout(comboTimer);
+  comboTimer = window.setTimeout(() => endCompose(), TEXT_HOLD);
+  return true;
+}
+
+function endCompose() {
+  clearTimeout(comboTimer);
+  comboTimer = 0;
+  compose.close();
+}
+
+compose.onDone(() => {
+  // 散回树上之后，把真实场景放出来
+  for (const object of sceneObjects) object.visible = true;
+  sceneHidden = false;
+});
 
 const addButton = document.getElementById('add-photo');
 const fileInput = document.getElementById('photo-input');
@@ -613,6 +667,8 @@ if (query.get('debug') === '1') {
 
 const handTracker = createHandTracker({
   video: gestureVideo,
+  // ?roi=0 关掉手部裁剪，出问题时的兜底开关
+  roi: query.get('roi') !== '0',
   onTrack: (state) => {
     gestureFx.track(state);
     if (!gestureDebugEl) return;
@@ -628,12 +684,14 @@ const handTracker = createHandTracker({
         `拇指 out ${m.thumb.thumbOut?.toFixed(2)} rise ${m.thumb.rise?.toFixed(2)} | ` +
         `拳 ${m.fist.maxCurl?.toFixed(2)}/${m.fist.thumbTuck?.toFixed(2)} ` +
         `开 ${m.open.minCurl?.toFixed(2)}/${m.open.thumbOut?.toFixed(2)} | ` +
+        `推理 ${handTracker.inferAvg}ms · ROI ${Math.round(handTracker.roiSize * 100)}% | ` +
         `延迟 ${handTracker.latency ?? '-'}ms`
       : '手势 -';
   },
   onHeart: ({ x, y }) => gestureFx.burst('heart', x, y),
   onThumb: ({ x, y }) => gestureFx.burst('thumb', x, y),
-  onPalm: ({ x, y }) => popPhotoFromHand(x, y),
+  onPalm: () => openCompose(),
+  onPinch: () => composeToText(),
   onStatus: (status) => {
     const busy = status === 'loading';
     // 加载中也可以再点一次取消
@@ -653,7 +711,7 @@ const handTracker = createHandTracker({
       } catch {
         // 隐私模式存不了，最多下次多等一会儿
       }
-      showToast('比心、竖大拇指，或者握拳再张开');
+      showToast('比心、竖大拇指，或者握拳张开再捏一下');
     } else if (gestureMessages[status]) {
       showToast(gestureMessages[status]);
     }
@@ -661,6 +719,39 @@ const handTracker = createHandTracker({
 });
 
 gestureToggle?.addEventListener('click', () => handTracker.toggle());
+
+/* ---------------- 背景音乐 ---------------- */
+
+const music = createMusic();
+const musicToggle = document.getElementById('music-toggle');
+const musicLabel = document.getElementById('music-label');
+let musicWanted = false;
+
+function syncMusic() {
+  const on = music.playing;
+  musicToggle?.setAttribute('aria-pressed', String(on));
+  if (musicLabel) musicLabel.textContent = on ? '音乐 · 开' : '音乐';
+}
+
+musicToggle?.addEventListener('click', () => {
+  musicWanted = !music.playing;
+  if (music.playing) music.stop();
+  else music.start();
+  syncMusic();
+});
+
+// 切到后台就停，回来时如果之前是开着的就接着放
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (music.playing) {
+      music.stop();
+      syncMusic();
+    }
+  } else if (musicWanted && !music.playing) {
+    music.start();
+    syncMusic();
+  }
+});
 
 // 预热：鼠标移到按钮上、或用过手势的人空闲时，先把模型拉下来
 let prewarmStarted = false;
@@ -709,9 +800,14 @@ if (query.get('debug') === '1') {
     viewerEl,
     hand: handTracker,
     gestureFx,
-    popPhotoFromHand,
     santa,
     playSanta,
+    music,
+    musicPreview: renderPreview,
+    compose,
+    openCompose,
+    composeToText,
+    endCompose,
     scene,
     renderer,
     controls,
@@ -781,6 +877,7 @@ function degrade() {
   bursts.setPixelRatio(pixelRatio);
   photoOrnaments.setPixelRatio(pixelRatio);
   santa.setPixelRatio(pixelRatio);
+  compose.setPixelRatio(pixelRatio);
 }
 
 function fallback(message) {
@@ -825,10 +922,19 @@ function animate() {
   bursts.update(dt);
   photoOrnaments.update(elapsed, dt, camera.position);
   santa.update(elapsed, dt);
+  compose.update(elapsed, dt, camera);
   gestureFx.update(elapsed, dt);
 
+  // 粒子云一旦接管画面，就把真实场景收起来（不然会和云叠在一起）
+  if (compose.covered !== sceneHidden) {
+    sceneHidden = compose.covered;
+    for (const object of sceneObjects) object.visible = !sceneHidden;
+    // 粒子拼字的时候，把底下那行 DOM 文案收起来，免得同一句话出现两次
+    document.body.classList.toggle('is-composing', sceneHidden);
+  }
+
   // 过场期间雪下得更足，结束后慢慢回到平时的细雪
-  const snowTarget = santa.active ? 1 : 0;
+  const snowTarget = santa.active || compose.covered ? 1 : 0;
   snowBoost += (snowTarget - snowBoost) * Math.min(1, dt * 1.6);
   snow.setIntensity(0.32 + snowBoost * 0.68);
   ground.setSnow(snowBoost);

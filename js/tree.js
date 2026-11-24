@@ -219,6 +219,10 @@ export function createTree(count) {
       uniforms.uPixelRatio.value = value;
       sUniforms.uPixelRatio.value = value;
     },
+    /** 粒子坐标（组合技炸开时要用同一套起点，才能接着树形无缝接管） */
+    getPositions() {
+      return positions;
+    },
     /** 降画质时只减少绘制数量，不重建几何体 */
     setDrawCount(n) {
       points.geometry.setDrawRange(0, n);
