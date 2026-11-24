@@ -42,6 +42,21 @@
 
 照片在浏览器内按原比例缩到长边 1024px（不裁切，横图竖图都保持原样）后存进 IndexedDB，**不会上传到任何服务器**；清浏览器数据会一并消失。树上只保留照片的平均色用于礼物配色，不会把整张照片加载进显存。
 
+## 手势：比心 / 竖大拇指
+
+点工具栏的「手势」按钮才会申请摄像头权限，**默认是关的**：
+
+- **比心**（拇指与食指指尖靠近、其余三指收住）→ 手的位置炸开一颗粒子心：1200 颗光点拼出心形轮廓与内部，冲击波也是点组成的环，外加带拖尾的星火
+- **竖大拇指**（四指收住、拇指朝上）→ 把 👍 的剪影采样成点云拼出来（轮廓亮、内部暗），不是贴 emoji
+- 保持约 0.2 秒就触发，期间手的位置会出现一个**准星 + 蓄力环**，环填满即触发——所以不会"比半天没反应"
+- 冷却 1 秒，避免连续触发刷屏
+- 「预览」按钮打开左下角的摄像头小窗，能看清手在哪；默认关，选择会记住
+- 再点一次「手势」立刻停止采集，摄像头指示灯熄灭
+
+隐私：画面只在本机内存里做推理，**不上传、不落盘**。模型与 wasm（约 17MB）放在 `vendor/mediapipe/`，只有点「手势」时才动态加载，不影响首页加载速度。
+
+手部 21 个关键点由 MediaPipe Tasks Vision 的 `HandLandmarker` 给出；比心判定是几条几何启发式（指尖距离、拇指/食指伸直度、中无名小三指的蜷曲度），阈值集中写在 [`js/hand.js`](js/hand.js) 的 `THRESHOLD` 里，真机手感不对直接调数。
+
 ## 交互
 
 | 操作 | 效果 |
@@ -51,6 +66,7 @@
 | 移动鼠标 | 树随指针轻微偏转 |
 | 点击礼物 | 拆开礼物，照片飞到页面中间 |
 | 点击空白处 | 在点击处撒出一把金色星火 |
+| 对着摄像头比心 / 竖大拇指 | 手的位置炸开粒子心 / 金色大拇指（要先点「手势」） |
 | 悬停礼物 | 礼物放大、盒盖微翘、洒出粒子 |
 | 链接加 `?to=小明` | 底部文案变成 `To 小明` 的定制问候 |
 
@@ -80,6 +96,8 @@ js/
   ornaments.js      发光球挂饰（装饰用）
   photo-ornaments.js 照片挂饰：动态布点、朝向、淡出、拾取
   photos.js         照片压缩与 IndexedDB 存取
+  hand.js           摄像头手势：比心 / 大拇指判定、状态机、摄像头生命周期
+  gesture-fx.js     手势特效：准星、蓄力环、粒子心、大拇指（Canvas 2D 叠加层）
   star.js           树顶五角星
   snow.js           飘雪
   sky.js            远景星空
@@ -88,6 +106,7 @@ js/
   burst.js          点击星火
   textures.js       程序化生成的柔光贴图
 vendor/three/       three.js r187（内嵌，含 OrbitalControls 与后期模块）
+vendor/mediapipe/   手部关键点模型与 wasm（17MB，按需加载）
 ```
 
 ## 调参
@@ -117,7 +136,8 @@ vendor/three/       three.js r187（内嵌，含 OrbitalControls 与后期模块
 ## 路线图
 
 - [x] 照片挂饰：上传 → 圆形成像 → 挂上树 → 点击看大图（IndexedDB 本地保存）
-- [ ] 摄像头手势：MediaPipe 手部追踪，挥手推开粒子、旋转树、捏合缩放
+- [x] 摄像头手势：比心 → 粒子心、竖大拇指 → 粒子拇指（MediaPipe 手部追踪）
+- [ ] 摄像头手势：握拳→张开 → 弹出一张照片
 - [ ] 背景音乐开关（Web Audio 合成，无版权素材）
 - [ ] 更多彩蛋与文案模板
 
@@ -126,6 +146,7 @@ vendor/three/       three.js r187（内嵌，含 OrbitalControls 与后期模块
 - [three.js](https://threejs.org/) r187，构建产物内嵌仓库，不依赖 CDN
 - 无打包工具，原生 ES module + `importmap`
 - 树体、灯串、雪、星空、余烬均为自定义 `ShaderMaterial`
+- 手势用 [MediaPipe Tasks Vision](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker) 的 `HandLandmarker`，模型与 wasm 内嵌在 `vendor/mediapipe/`
 - 后期使用 `UnrealBloomPass` + `OutputPass`
 
 ## 许可

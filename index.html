@@ -40,8 +40,22 @@
           <span class="btn__plus" aria-hidden="true">+</span>
           <span>添加照片</span>
         </button>
+        <button class="btn btn--ghost" id="gesture-toggle" type="button" aria-pressed="false">
+          <span id="gesture-label">手势</span>
+        </button>
+        <button
+          class="btn btn--ghost btn--small"
+          id="gesture-preview-toggle"
+          type="button"
+          aria-pressed="false"
+          hidden
+        >
+          预览
+        </button>
         <input id="photo-input" type="file" accept="image/*" multiple hidden />
       </div>
+
+      <video id="gesture-video" class="gesture-video" autoplay playsinline muted aria-hidden="true"></video>
 
       <div class="dropzone" id="dropzone" aria-hidden="true">
         <p>松开手，把照片挂上树</p>

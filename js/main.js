@@ -16,6 +16,8 @@ import { createBurstSystem } from './burst.js';
 import { createTrunk } from './trunk.js';
 import { createGround } from './ground.js';
 import { createPhotoOrnaments } from './photo-ornaments.js';
+import { createHandTracker } from './hand.js';
+import { createGestureFx } from './gesture-fx.js';
 import {
   blobToAverageColor,
   fileToPhotoBlob,
@@ -137,6 +139,9 @@ const snow = createSnow(quality.snow);
 scene.add(snow.points);
 
 const bursts = createBurstSystem(scene);
+
+// 屏幕空间的手势反馈：准星、蓄力环、比心 / 大拇指特效
+const gestureFx = createGestureFx();
 
 const photoOrnaments = createPhotoOrnaments(world, {
   onSparkle: (position) => bursts.spawn(position, 0.32),
@@ -413,11 +418,111 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeViewer();
 });
 
+/* ---------------- 摄像头手势：比心 ---------------- */
+
+const gestureVideo = document.getElementById('gesture-video');
+const gestureToggle = document.getElementById('gesture-toggle');
+const gestureLabel = document.getElementById('gesture-label');
+const gesturePreviewToggle = document.getElementById('gesture-preview-toggle');
+const PREVIEW_KEY = 'xmas-gesture-preview';
+
+let previewOn = false;
+try {
+  previewOn = localStorage.getItem(PREVIEW_KEY) === '1';
+} catch {
+  previewOn = false;
+}
+
+const gestureMessages = {
+  'no-api': '浏览器不给用摄像头，需要 https 或 localhost',
+  denied: '摄像头权限被拒了，在地址栏允许后再点一次',
+  'no-camera': '没找到可用的摄像头',
+  nosimd: '浏览器版本太旧，跑不动手势识别',
+  failed: '手势模型没加载成功，检查网络再试',
+};
+
+function syncPreview(running) {
+  document.body.classList.toggle('is-gesture-preview', running && previewOn);
+  gesturePreviewToggle?.setAttribute('aria-pressed', String(previewOn));
+}
+
+// ?debug=1 时右下角给个数值面板，方便判断是"没识别到手"还是"识别到了但姿势不对"
+let gestureDebugEl = null;
+if (query.get('debug') === '1') {
+  gestureDebugEl = document.createElement('div');
+  gestureDebugEl.className = 'gesture-debug';
+  gestureDebugEl.hidden = true;
+  document.body.appendChild(gestureDebugEl);
+}
+
+const handTracker = createHandTracker({
+  video: gestureVideo,
+  onTrack: (state) => {
+    gestureFx.track(state);
+    if (!gestureDebugEl) return;
+    if (!state || !state.present) {
+      gestureDebugEl.hidden = true;
+      return;
+    }
+    const m = state.metrics;
+    gestureDebugEl.hidden = false;
+    gestureDebugEl.textContent = m
+      ? `手势 ${state.kind || '-'} ${Math.round((state.progress || 0) * 100)}% | ` +
+        `心 gap ${m.heart.tipGap?.toFixed(2)} curl ${m.heart.curled?.toFixed(2)} | ` +
+        `拇指 out ${m.thumb.thumbOut?.toFixed(2)} rise ${m.thumb.rise?.toFixed(2)} curl ${m.thumb.curled?.toFixed(2)}`
+      : '手势 -';
+  },
+  onHeart: ({ x, y }) => gestureFx.burst('heart', x, y),
+  onThumb: ({ x, y }) => gestureFx.burst('thumb', x, y),
+  onStatus: (status) => {
+    const busy = status === 'loading';
+    // 加载中也可以再点一次取消
+    if (gestureToggle) {
+      gestureToggle.setAttribute('aria-pressed', String(status === 'running'));
+    }
+    if (gestureLabel) {
+      gestureLabel.textContent =
+        busy ? '准备中…' : status === 'running' ? '手势 · 开' : '手势';
+    }
+    if (gesturePreviewToggle) gesturePreviewToggle.hidden = status !== 'running';
+    syncPreview(status === 'running');
+
+    if (status === 'running') {
+      showToast('比心 或 竖大拇指，手保持在画面里');
+    } else if (gestureMessages[status]) {
+      showToast(gestureMessages[status]);
+    }
+  },
+});
+
+gestureToggle?.addEventListener('click', () => handTracker.toggle());
+
+gesturePreviewToggle?.addEventListener('click', () => {
+  previewOn = !previewOn;
+  try {
+    localStorage.setItem(PREVIEW_KEY, previewOn ? '1' : '0');
+  } catch {
+    // 隐私模式下存不了，只影响下次是否记住
+  }
+  syncPreview(handTracker.running);
+});
+
 hydratePhotos();
 
 // 调试钩子：只在 ?debug=1 时暴露，方便自动化测试定位挂饰
 if (query.get('debug') === '1') {
-  window.__xmas = { THREE, camera, photoOrnaments, openViewer, closeViewer, viewerEl };
+  window.__xmas = {
+    THREE,
+    camera,
+    photoOrnaments,
+    openViewer,
+    closeViewer,
+    viewerEl,
+    hand: handTracker,
+    gestureFx,
+    scene,
+    renderer,
+  };
 }
 
 /* ---------------- 尺寸与构图 ---------------- */
@@ -433,6 +538,7 @@ function layout() {
   renderer.setSize(width, height);
   composer.setSize(width, height);
   bloomPass.setSize(width, height);
+  gestureFx.setViewport(width, height, pixelRatio);
 
   // 竖屏时整体缩小，保证整棵树完整入镜
   const isPortrait = aspect < 0.82;
@@ -519,6 +625,7 @@ function animate() {
   sky.update(elapsed);
   bursts.update(dt);
   photoOrnaments.update(elapsed, dt, camera.position);
+  gestureFx.update(elapsed, dt);
 
   // 鼠标视差：树随指针轻微偏转，幅度必须小，否则会晕
   pointer.lerp(pointerTarget, 1 - Math.pow(0.0015, dt));
