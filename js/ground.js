@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GROUND_Y } from './config.js';
-import { createGroundGlowTexture } from './textures.js';
+import { createGlowTexture, createGroundGlowTexture } from './textures.js';
 
 /**
  * 地面：一圈向外淡出的暗色雪地 + 树干底部的接触阴影 + 一圈绿色落光。
@@ -91,8 +91,28 @@ export function createGround() {
   glow.renderOrder = 1;
   group.add(glow);
 
+  // 薄薄一层积雪的反光：只提亮不遮色，过场下雪时加浓
+  const snowTexture = createGlowTexture(256);
+  const snowMaterial = new THREE.MeshBasicMaterial({
+    map: snowTexture,
+    color: 0xa9c8ec,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    opacity: 0.12,
+  });
+  const snowSheen = new THREE.Mesh(new THREE.PlaneGeometry(17, 17), snowMaterial);
+  snowSheen.rotation.x = -Math.PI / 2;
+  snowSheen.position.y = GROUND_Y + 0.035;
+  snowSheen.renderOrder = 3;
+  group.add(snowSheen);
+
   return {
     group,
+    /** 0 = 平时的地面积雪，1 = 雪下大了 */
+    setSnow(value) {
+      snowMaterial.opacity = 0.12 + Math.min(Math.max(value, 0), 1) * 0.2;
+    },
     dispose() {
       surface.geometry.dispose();
       surface.material.dispose();
@@ -102,6 +122,9 @@ export function createGround() {
       glow.geometry.dispose();
       glow.material.dispose();
       glowTexture.dispose();
+      snowSheen.geometry.dispose();
+      snowMaterial.dispose();
+      snowTexture.dispose();
     },
   };
 }

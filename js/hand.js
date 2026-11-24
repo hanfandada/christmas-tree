@@ -1,5 +1,10 @@
 /**
- * 摄像头手势：比心 / 竖大拇指。
+ * 摄像头手势：比心 / 竖大拇指 / 握拳→张开。
+ *
+ * 三类手势分两套逻辑：
+ *  - 比心、大拇指：姿势保持 HOLD_MS 就触发，属于"摆出来就出"
+ *  - 握拳→张开：序列手势，要先把拳头稳住 PALM_HOLD_MS，再张开才算完成，
+ *    这样单纯挥手、打字、张开手掌都不会误触
  *
  * 设计约束：
  *  - 模型与 wasm 全部 vendor 在 vendor/mediapipe/，点按钮时才动态 import，
@@ -24,6 +29,7 @@ const HOLD_MS = 100; // 姿势稳住多久触发：一摆好就出，尽量不�
 const COOLDOWN_MS = 700; // 两次触发的最短间隔
 const MIN_STREAK = 2; // 至少连续几帧判定成功
 const RELEASE_STREAK = 2; // 连续几帧没姿势才重新上膛
+const PALM_HOLD_MS = 260; // 握拳要稳住这么久，张开才算数（太短会误触）
 
 // 送进模型前先缩到这个宽度：640×480 直接喂太浪费，缩一半速度明显更快
 const PROCESS_WIDTH = 320;
@@ -32,6 +38,8 @@ const PROCESS_WIDTH = 320;
  * 判定阈值都放这里，真机手感不对就调这几个数。
  * 比心：拇指食指指尖靠近、两指都伸出来、其余三指收住
  * 大拇指：四指全收、拇指明显伸出来且朝上
+ * 握拳：四指全收、拇指也收起来（跟竖大拇指区分开）
+ * 张开：四指全伸、大拇指也张开
  */
 export const THRESHOLD = {
   heartTipGap: 0.85,
@@ -41,6 +49,10 @@ export const THRESHOLD = {
   thumbOut: 0.5,
   thumbRise: 0.12,
   thumbCurled: 1.0,
+  fistCurl: 0.88,
+  fistThumbTuck: 0.5,
+  openCurl: 1.02,
+  openThumbOut: 0.45,
 };
 
 function dist(a, b) {
@@ -102,6 +114,50 @@ export function analyzeThumbUp(lm) {
   return { isThumbUp, thumbOut, rise, curled };
 }
 
+/** 拇指尖到拇指根的相对距离：收起来 < 0.5，伸出去 > 0.5 */
+function thumbSpread(lm, scale) {
+  return dist(lm[4], lm[2]) / scale;
+}
+
+/** 四指（食指到小指）的蜷曲程度 */
+function fingerCurls(lm) {
+  return [
+    curlRatio(lm, 8, 6),
+    curlRatio(lm, 12, 10),
+    curlRatio(lm, 16, 14),
+    curlRatio(lm, 20, 18),
+  ];
+}
+
+/** 握拳：四指全收，且拇指收在掌心（拇指伸出去的就是竖大拇指，不算握拳） */
+export function analyzeFist(lm) {
+  if (!lm || lm.length < 21) return { isFist: false };
+
+  const scale = handScale(lm);
+  const curls = fingerCurls(lm);
+  const maxCurl = Math.max(...curls);
+  const thumbTuck = thumbSpread(lm, scale);
+
+  // 只看"四指蜷起来 + 拇指收回来"：握拳时拇指指尖压在食指中段，
+  // 会比拇指根高，所以不能拿"拇指朝上"来排除竖大拇指，只能看拇指伸没伸出去
+  const isFist = maxCurl < THRESHOLD.fistCurl && thumbTuck < THRESHOLD.fistThumbTuck;
+
+  return { isFist, maxCurl, thumbTuck };
+}
+
+/** 张开手掌：四指全伸、拇指也张开 */
+export function analyzeOpenPalm(lm) {
+  if (!lm || lm.length < 21) return { isOpen: false };
+
+  const scale = handScale(lm);
+  const minCurl = Math.min(...fingerCurls(lm));
+  const thumbOut = thumbSpread(lm, scale);
+
+  const isOpen = minCurl > THRESHOLD.openCurl && thumbOut > THRESHOLD.openThumbOut;
+
+  return { isOpen, minCurl, thumbOut };
+}
+
 /** 手掌中心在屏幕上的位置（摄像头是镜像的，x 要翻） */
 function palmScreen(lm) {
   const ids = [0, 5, 9, 13, 17];
@@ -129,7 +185,7 @@ function errorCode(error) {
   return 'failed';
 }
 
-export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus } = {}) {
+export function createHandTracker({ video, onHeart, onThumb, onPalm, onTrack, onStatus } = {}) {
   let landmarker = null;
   let stream = null;
   let running = false;
@@ -145,13 +201,22 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
   let processCanvas = null;
   let processCtx = null;
 
-  // 手势状态机
+  // 手势状态机（比心 / 大拇指：保持触发）
   let currentKind = null;
   let since = 0;
   let streak = 0;
   let releaseStreak = 0;
   let lastFire = -Infinity;
   let armed = true;
+
+  // 序列状态机（握拳 → 张开）
+  let fistStreak = 0;
+  let openStreak = 0;
+  let neutralStreak = 0;
+  let palmStage = 'idle'; // idle | fist | spent
+  let palmSince = 0;
+  let lastPalmFire = -Infinity;
+  let lastPalmLatency = null;
 
   function setStatus(status, error) {
     onStatus?.(status, error);
@@ -298,6 +363,52 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
 
   /* ---------------- 识别与状态机 ---------------- */
 
+  function resetPalm() {
+    fistStreak = 0;
+    openStreak = 0;
+    neutralStreak = 0;
+    palmStage = 'idle';
+  }
+
+  /**
+   * 握拳 → 张开。
+   *
+   * 设计要点：
+   *  - 只有"先握拳、稳住 PALM_HOLD_MS、再张开"才算完成，单纯张开手掌什么都不做
+   *  - 触发后进入 spent，必须重新握一次拳才有下一次，同一个手势不会连弹
+   *  - 中间有一两帧没识别到不算中断（neutralStreak 兜底），手放下来才作废
+   * @returns {boolean} 这一帧是否完成了一次完整手势
+   */
+  function updatePalm(now, fist, open) {
+    fistStreak = fist.isFist ? fistStreak + 1 : 0;
+    openStreak = open.isOpen ? openStreak + 1 : 0;
+    neutralStreak = !fist.isFist && !open.isOpen ? neutralStreak + 1 : 0;
+
+    // 握拳：连续两帧确认后再开始计时，单帧抖动不进蓄力
+    if (palmStage !== 'fist' && fistStreak >= MIN_STREAK) {
+      palmStage = 'fist';
+      palmSince = now;
+      return false;
+    }
+
+    // 手放下来 / 摆成别的姿势：这次蓄力作废，得重新握
+    if (neutralStreak >= 3) {
+      palmStage = 'idle';
+      return false;
+    }
+
+    if (palmStage !== 'fist') return false;
+    if (fistStreak > 0) return false; // 还握着拳，等张开
+    if (openStreak < MIN_STREAK) return false; // 还没完全张开
+    if (now - palmSince < PALM_HOLD_MS) return false; // 握得太短，当挥手
+    if (now - lastPalmFire < COOLDOWN_MS) return false;
+
+    palmStage = 'spent';
+    lastPalmFire = now;
+    lastPalmLatency = Math.round(now - palmSince);
+    return true;
+  }
+
   function handleLandmarks(lm, now) {
     if (!lm || lm.length < 21) {
       lastMetrics = null;
@@ -307,18 +418,29 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
       streak = 0;
       releaseStreak += 1;
       if (releaseStreak >= RELEASE_STREAK) armed = true;
+      resetPalm();
       return;
     }
 
     const heart = analyzeHeart(lm);
     const thumb = analyzeThumbUp(lm);
-    lastMetrics = { heart, thumb };
+    const fist = analyzeFist(lm);
+    const open = analyzeOpenPalm(lm);
+    lastMetrics = { heart, thumb, fist, open };
+
+    const pos = palmScreen(lm);
+
+    // 序列手势独立于下面比心 / 大拇指的"保持触发"
+    if (updatePalm(now, fist, open)) {
+      // 这里的 latency 含 260ms 的刻意蓄力，不写进 heart/thumb 的响应耗时里
+      onPalm?.({ ...pos, latency: lastPalmLatency });
+    }
 
     let kind = null;
     if (heart.isHeart) kind = 'heart';
     else if (thumb.isThumbUp) kind = 'thumb';
-
-    const pos = palmScreen(lm);
+    else if (fist.isFist) kind = 'fist';
+    else if (open.isOpen) kind = 'open';
 
     if (!kind) {
       pointerOff(pos);
@@ -340,7 +462,23 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
 
     const held = now - since;
     const progress = armed ? Math.min(1, held / HOLD_MS) : 0;
-    onTrack?.({ present: true, x: pos.x, y: pos.y, kind, progress, metrics: { heart, thumb } });
+    const palmKind = kind === 'fist' || kind === 'open';
+    // 拳头 / 张开手掌只驱动准星蓄力，真正触发在 updatePalm 里
+    const displayProgress = palmKind
+      ? palmStage === 'fist'
+        ? Math.min(1, (now - palmSince) / PALM_HOLD_MS)
+        : 0
+      : progress;
+    onTrack?.({
+      present: true,
+      x: pos.x,
+      y: pos.y,
+      kind,
+      progress: displayProgress,
+      metrics: { heart, thumb, fist, open },
+    });
+
+    if (palmKind) return;
 
     if (armed && progress >= 1 && streak >= MIN_STREAK && now - lastFire >= COOLDOWN_MS) {
       armed = false;
@@ -390,6 +528,9 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
       streak = 0;
       releaseStreak = 0;
       armed = true;
+      lastFire = -Infinity;
+      lastPalmFire = -Infinity;
+      resetPalm();
       setStatus('running');
       scheduleFrame();
     } catch (error) {
@@ -456,6 +597,11 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
     },
     analyze: analyzeHeart,
     analyzeThumb: analyzeThumbUp,
+    analyzeFist,
+    analyzeOpen: analyzeOpenPalm,
+    get palmStage() {
+      return palmStage;
+    },
     /** 调试用：直接喂一组关键点走完整状态机 */
     feed(lm, now = performance.now()) {
       handleLandmarks(lm, now);

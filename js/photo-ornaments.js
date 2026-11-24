@@ -828,6 +828,10 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
     getArcCount() {
       return arcs.filter((a) => a.a).length;
     },
+    /** 树上照片的 id，按挂上树的先后顺序 */
+    getIds() {
+      return [...order];
+    },
     getDebug() {
       return [...items.values()].map((i) => ({
         id: i.id,

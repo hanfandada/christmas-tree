@@ -11,7 +11,7 @@
  */
 
 const TAU = Math.PI * 2;
-const LIFE = { heart: 2.0, thumb: 1.9 };
+const LIFE = { heart: 2.0, thumb: 1.9, pulse: 1.0 };
 
 const isSmallScreen = () => Math.min(window.innerWidth, window.innerHeight) < 620;
 
@@ -262,8 +262,10 @@ export function createGestureFx() {
 
     const x = pointer?.x ?? 0;
     const y = pointer?.y ?? 0;
-    const tint = pointer?.kind === 'thumb' ? 'gold' : 'rose';
-    const fillTint = pointer?.kind === 'thumb' ? 'amber' : 'pink';
+    // 握拳 / 张开手掌走冷白色，和比心的玫瑰色、大拇指的金色区分开
+    const isPalm = pointer?.kind === 'fist' || pointer?.kind === 'open';
+    const tint = isPalm ? 'white' : pointer?.kind === 'thumb' ? 'gold' : 'rose';
+    const fillTint = isPalm ? 'gold' : pointer?.kind === 'thumb' ? 'amber' : 'pink';
     const radius = 30;
 
     ctx.globalCompositeOperation = 'lighter';
@@ -430,9 +432,21 @@ export function createGestureFx() {
       const p = Math.min(burst.age / life, 1);
 
       updateSparks(burst, dt);
-      drawWave(burst, p, 0, burst.kind === 'thumb' ? 'gold' : 'pink', 1.6, 46);
-      drawWave(burst, p, 0.12, burst.kind === 'thumb' ? 'white' : 'gold', 1.2, 34);
-      drawShape(burst, time);
+      if (burst.kind === 'pulse') {
+        // 掌心脉冲：先闪一下，再两圈光点扩散出去，不画形状
+        const flash = Math.max(0, 1 - p / 0.3);
+        if (flash > 0) {
+          const size = baseScale * (0.45 + (1 - flash) * 0.75);
+          ctx.globalAlpha = flash * 0.85;
+          ctx.drawImage(dots.white, burst.x - size / 2, burst.y - size / 2, size, size);
+        }
+        drawWave(burst, p, 0, 'white', 0.9, 40);
+        drawWave(burst, p, 0.16, 'gold', 0.62, 26);
+      } else {
+        drawWave(burst, p, 0, burst.kind === 'thumb' ? 'gold' : 'pink', 1.6, 46);
+        drawWave(burst, p, 0.12, burst.kind === 'thumb' ? 'white' : 'gold', 1.2, 34);
+        drawShape(burst, time);
+      }
       drawSparks(burst, p);
     }
 
@@ -456,7 +470,7 @@ export function createGestureFx() {
         thumbPoints = buildThumbPoints(isSmallScreen() ? 420 : 760);
       }
       const k = baseScale / 110;
-      const sparkCount = kind === 'thumb' ? 70 : 110;
+      const sparkCount = kind === 'pulse' ? 26 : kind === 'thumb' ? 70 : 110;
       bursts.push({
         kind,
         x,
