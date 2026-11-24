@@ -781,17 +781,19 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
 
   /* ---------------- 冲击波 ---------------- */
 
-  const ringGeometry = new THREE.RingGeometry(0.6, 0.66, 64);
+  const ringGeometry = new THREE.RingGeometry(0.6, 0.71, 64);
   const rings = [];
 
   function spawnRing(item) {
     const material = new THREE.MeshBasicMaterial({
-      color: 0xffd79a,
+      // 超过 1 的亮度才会被泛光接住，不然只是一圈灰环
+      color: new THREE.Color(0xffd79a).multiplyScalar(1.9),
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.7,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
+      toneMapped: false,
     });
     const mesh = new THREE.Mesh(ringGeometry, material);
     mesh.position.copy(item.group.position);
@@ -812,7 +814,7 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
       ring.life += dt;
       const k = Math.min(1, ring.life / ring.duration);
       ring.mesh.scale.setScalar(ring.startScale * (1 + k * 3.2));
-      ring.material.opacity = Math.pow(1 - k, 2.2) * 0.6;
+      ring.material.opacity = Math.pow(1 - k, 1.6) * 0.9;
       ring.mesh.lookAt(cameraLocal);
       if (k >= 1) {
         group.remove(ring.mesh);
