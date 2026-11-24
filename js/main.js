@@ -433,6 +433,8 @@ try {
   previewOn = false;
 }
 
+const GESTURE_USED_KEY = 'xmas-gesture-used';
+
 const gestureMessages = {
   'no-api': '浏览器不给用摄像头，需要 https 或 localhost',
   denied: '摄像头权限被拒了，在地址栏允许后再点一次',
@@ -469,7 +471,8 @@ const handTracker = createHandTracker({
     gestureDebugEl.textContent = m
       ? `手势 ${state.kind || '-'} ${Math.round((state.progress || 0) * 100)}% | ` +
         `心 gap ${m.heart.tipGap?.toFixed(2)} curl ${m.heart.curled?.toFixed(2)} | ` +
-        `拇指 out ${m.thumb.thumbOut?.toFixed(2)} rise ${m.thumb.rise?.toFixed(2)} curl ${m.thumb.curled?.toFixed(2)}`
+        `拇指 out ${m.thumb.thumbOut?.toFixed(2)} rise ${m.thumb.rise?.toFixed(2)} | ` +
+        `延迟 ${handTracker.latency ?? '-'}ms`
       : '手势 -';
   },
   onHeart: ({ x, y }) => gestureFx.burst('heart', x, y),
@@ -488,6 +491,11 @@ const handTracker = createHandTracker({
     syncPreview(status === 'running');
 
     if (status === 'running') {
+      try {
+        localStorage.setItem(GESTURE_USED_KEY, '1');
+      } catch {
+        // 隐私模式存不了，最多下次多等一会儿
+      }
       showToast('比心 或 竖大拇指，手保持在画面里');
     } else if (gestureMessages[status]) {
       showToast(gestureMessages[status]);
@@ -496,6 +504,27 @@ const handTracker = createHandTracker({
 });
 
 gestureToggle?.addEventListener('click', () => handTracker.toggle());
+
+// 预热：鼠标移到按钮上、或用过手势的人空闲时，先把模型拉下来
+let prewarmStarted = false;
+
+function prewarmGesture() {
+  if (prewarmStarted || handTracker.running) return;
+  prewarmStarted = true;
+  handTracker.prewarm();
+}
+
+gestureToggle?.addEventListener('pointerenter', prewarmGesture, { once: true });
+gestureToggle?.addEventListener('focus', prewarmGesture, { once: true });
+
+try {
+  if (localStorage.getItem(GESTURE_USED_KEY) === '1') {
+    const idle = window.requestIdleCallback || ((cb) => window.setTimeout(cb, 2500));
+    idle(() => prewarmGesture(), { timeout: 4000 });
+  }
+} catch {
+  // 读不到 localStorage 就只在悬停时预热
+}
 
 gesturePreviewToggle?.addEventListener('click', () => {
   previewOn = !previewOn;

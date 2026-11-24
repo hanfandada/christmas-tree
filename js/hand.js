@@ -20,11 +20,13 @@ const MODEL_URL = new URL('vendor/mediapipe/hand_landmarker.task', document.base
 const WASM_DIR = new URL('vendor/mediapipe/wasm', document.baseURI).href;
 const BUNDLE_URL = '../vendor/mediapipe/vision_bundle.mjs';
 
-const HOLD_MS = 220; // 姿势稳住多久触发（手感上"一摆好就出"）
-const COOLDOWN_MS = 1000; // 两次触发的最短间隔
+const HOLD_MS = 100; // 姿势稳住多久触发：一摆好就出，尽量不让人等
+const COOLDOWN_MS = 700; // 两次触发的最短间隔
 const MIN_STREAK = 2; // 至少连续几帧判定成功
-const INFERENCE_INTERVAL = 55; // 推理节流，约 18fps
 const RELEASE_STREAK = 2; // 连续几帧没姿势才重新上膛
+
+// 送进模型前先缩到这个宽度：640×480 直接喂太浪费，缩一半速度明显更快
+const PROCESS_WIDTH = 320;
 
 /**
  * 判定阈值都放这里，真机手感不对就调这几个数。
@@ -133,9 +135,15 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
   let running = false;
   let starting = false;
   let session = 0;
-  let raf = 0;
+  let frameHandle = 0;
   let lastInfer = 0;
   let lastMetrics = null;
+  let lastTimestamp = 0;
+  let lastLatency = null;
+  let frames = 0;
+  let prewarming = null;
+  let processCanvas = null;
+  let processCtx = null;
 
   // 手势状态机
   let currentKind = null;
@@ -216,6 +224,78 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
     if (video) video.srcObject = null;
   }
 
+  /* ---------------- 每帧识别 ---------------- */
+
+  /** 把视频帧等比缩到 320 宽再送模型：省掉一大半上传/缩放开销 */
+  function prepareFrame() {
+    const vw = video.videoWidth || 640;
+    const vh = video.videoHeight || 480;
+    const width = Math.min(PROCESS_WIDTH, vw);
+    const height = Math.max(1, Math.round((vh / vw) * width));
+
+    if (!processCanvas) {
+      processCanvas = document.createElement('canvas');
+      processCtx = processCanvas.getContext('2d');
+    }
+    if (processCanvas.width !== width || processCanvas.height !== height) {
+      processCanvas.width = width;
+      processCanvas.height = height;
+    }
+    processCtx.drawImage(video, 0, 0, width, height);
+    return processCanvas;
+  }
+
+  function runDetection() {
+    if (!running || document.hidden || !video || video.readyState < 2) return;
+
+    const frame = prepareFrame();
+    // 用视频自己的时间戳，比 rAF 时间稳，跟踪不会因为掉帧乱跳
+    const raw = video.currentTime * 1000;
+    const timestamp = Math.max(raw, lastTimestamp + 1);
+    lastTimestamp = timestamp;
+
+    frames += 1;
+    let result = null;
+    try {
+      result = landmarker.detectForVideo(frame, timestamp);
+    } catch {
+      return; // 偶尔会有帧没准备好，跳过就好
+    }
+    handleLandmarks(result?.landmarks?.[0] || null, performance.now());
+  }
+
+  /**
+   * 识别循环：rAF 驱动，但只在视频真的有新帧时才跑模型。
+   * （不用 requestVideoFrameCallback：video 不可见时它会被浏览器节流，
+   * 真机可能正常，但隐藏标签页/无头环境会直接卡死。）
+   */
+  let lastVideoTime = -1;
+
+  function scheduleFrame() {
+    if (!running) return;
+    frameHandle = requestAnimationFrame(onAnimationFrame);
+  }
+
+  function onAnimationFrame(now) {
+    if (!running) return;
+    scheduleFrame();
+
+    if (document.hidden || !video || video.readyState < 2) return;
+    if (now - lastInfer < 15) return;
+    lastInfer = now;
+
+    if (video.currentTime === lastVideoTime) return; // 没有新帧，不重复跑
+    lastVideoTime = video.currentTime;
+
+    runDetection();
+  }
+
+  function cancelFrames() {
+    if (!frameHandle) return;
+    cancelAnimationFrame(frameHandle);
+    frameHandle = 0;
+  }
+
   /* ---------------- 识别与状态机 ---------------- */
 
   function handleLandmarks(lm, now) {
@@ -265,30 +345,15 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
     if (armed && progress >= 1 && streak >= MIN_STREAK && now - lastFire >= COOLDOWN_MS) {
       armed = false;
       lastFire = now;
-      if (kind === 'heart') onHeart?.({ ...pos, metrics: heart });
-      else onThumb?.({ ...pos, metrics: thumb });
+      // 从"姿势刚满足条件"到真正触发之间的耗时，用来验收响应速度
+      lastLatency = Math.round(now - since);
+      if (kind === 'heart') onHeart?.({ ...pos, metrics: heart, latency: lastLatency });
+      else onThumb?.({ ...pos, metrics: thumb, latency: lastLatency });
     }
   }
 
   function pointerOff(pos = null) {
     onTrack?.(pos ? { present: true, x: pos.x, y: pos.y, kind: null, progress: 0 } : { present: false });
-  }
-
-  function tick(now) {
-    if (!running) return;
-    raf = requestAnimationFrame(tick);
-
-    if (document.hidden || !video || video.readyState < 2) return;
-    if (now - lastInfer < INFERENCE_INTERVAL) return;
-    lastInfer = now;
-
-    let result = null;
-    try {
-      result = landmarker.detectForVideo(video, now);
-    } catch {
-      return; // 偶尔会有帧没准备好，跳过就好
-    }
-    handleLandmarks(result?.landmarks?.[0] || null, now);
   }
 
   /* ---------------- 开关 ---------------- */
@@ -318,20 +383,21 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
       running = true;
       starting = false;
       lastInfer = 0;
+      lastTimestamp = 0;
+      lastVideoTime = -1;
       currentKind = null;
       since = 0;
       streak = 0;
       releaseStreak = 0;
       armed = true;
       setStatus('running');
-      raf = requestAnimationFrame(tick);
+      scheduleFrame();
     } catch (error) {
       if (mySession === session) {
         starting = false;
         running = false;
         stopCamera();
-        cancelAnimationFrame(raf);
-        raf = 0;
+        cancelFrames();
         setStatus(errorCode(error), error);
       }
     }
@@ -341,8 +407,7 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
     session += 1;
     running = false;
     starting = false;
-    cancelAnimationFrame(raf);
-    raf = 0;
+    cancelFrames();
     stopCamera();
     pointerOff();
     setStatus('idle');
@@ -363,6 +428,31 @@ export function createHandTracker({ video, onHeart, onThumb, onTrack, onStatus }
     },
     get metrics() {
       return lastMetrics;
+    },
+    get latency() {
+      return lastLatency;
+    },
+    get warm() {
+      return !!landmarker;
+    },
+    get frames() {
+      return frames;
+    },
+    /** 提前把模型加载好，点「手势」时只剩摄像头握手 */
+    prewarm() {
+      if (landmarker) return Promise.resolve();
+      if (!prewarming) {
+        prewarming = createLandmarker()
+          .then((model) => {
+            landmarker = model;
+            return model;
+          })
+          .catch(() => null)
+          .finally(() => {
+            prewarming = null;
+          });
+      }
+      return prewarming;
     },
     analyze: analyzeHeart,
     analyzeThumb: analyzeThumbUp,
