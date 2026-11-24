@@ -32,8 +32,8 @@ const RELEASE_STREAK = 2; // 连续几帧没姿势才重新上膛
 const PALM_HOLD_MS = 260; // 握拳要稳住这么久，张开才算数（太短会误触）
 
 // 送进模型前先缩到这个宽度：640×480 直接喂太浪费。
-// 256 比 320 少 36% 的像素，判定用的是比例（和分辨率无关），所以阈值不用改。
-const PROCESS_WIDTH = 256;
+// 256 更省算力，但真机上小图更容易丢手，先用回 320 这个验证过的值。
+const PROCESS_WIDTH = 320;
 
 /**
  * 手部 ROI：只把手附近那块送进模型，远处的手在画面里只占一小片，
@@ -292,7 +292,8 @@ export function createHandTracker({
   let processCtx = null;
   let roi = null; // { x, y, size } 归一化坐标
   let lostFrames = 0;
-  let useRoi = roiEnabled !== false;
+  // 默认不开：裁剪会让"丢一帧"变多，而手势要求连续帧，真机上反而更难触发
+  let useRoi = roiEnabled === true;
   let inferMs = 0;
   let inferAvg = 0;
 
@@ -336,9 +337,11 @@ export function createHandTracker({
       baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
       runningMode: 'VIDEO',
       numHands: 1,
-      minHandDetectionConfidence: 0.45,
-      minHandPresenceConfidence: 0.45,
-      minTrackingConfidence: 0.45,
+      // 门槛放低一点：真实房间的光照和角度比合成数据苛刻，
+      // 先把手"看见"，姿势判定那边还有一层过滤，误报不会直接触发特效
+      minHandDetectionConfidence: 0.35,
+      minHandPresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
     };
 
     try {

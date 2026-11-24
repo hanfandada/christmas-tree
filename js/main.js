@@ -667,8 +667,8 @@ if (query.get('debug') === '1') {
 
 const handTracker = createHandTracker({
   video: gestureVideo,
-  // ?roi=0 关掉手部裁剪，出问题时的兜底开关
-  roi: query.get('roi') !== '0',
+  // 手部裁剪默认关着（真机上更容易丢手），想试可以先 ?roi=1 打开
+  roi: query.get('roi') === '1',
   onTrack: (state) => {
     gestureFx.track(state);
     if (!gestureDebugEl) return;
