@@ -159,6 +159,7 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
     uniform float uTime;
     uniform float uPixelRatio;
     uniform float uOpacity;
+    uniform float uFlash;
     uniform vec3 uColor;
     uniform vec3 uGold;
 
@@ -188,12 +189,13 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
       if (aTint > 1.5) color = mix(uGold, uColor, 0.55);
 
       vColor = color;
-      vAlpha = uOpacity * (0.3 + 0.5 * twinkle) * (aTint > 1.5 ? 0.95 : 1.0);
-      gl_PointSize = aSize * uPixelRatio * (38.0 / max(0.6, -mv.z)) * (0.75 + 0.4 * twinkle);
+      vAlpha = uOpacity * (0.3 + 0.5 * twinkle) * (aTint > 1.5 ? 0.95 : 1.0) * (1.0 + uFlash * 0.55);
+      gl_PointSize = aSize * uPixelRatio * (38.0 / max(0.6, -mv.z)) * (0.75 + 0.4 * twinkle) * (1.0 + uFlash * 0.4);
     }
   `;
 
   const fragmentShader = /* glsl */ `
+    uniform float uFlash;
     varying vec3 vColor;
     varying float vAlpha;
 
@@ -202,7 +204,8 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
       float falloff = smoothstep(0.5, 0.0, d);
       float alpha = falloff * vAlpha;
       if (alpha < 0.008) discard;
-      gl_FragColor = vec4(vColor * 1.35, alpha);
+      // 落位闪光时整体提亮，加法混合下会自己泛出来
+      gl_FragColor = vec4(vColor * (1.35 + uFlash * 1.9), alpha);
     }
   `;
 
@@ -212,6 +215,7 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
         uTime: { value: 0 },
         uPixelRatio: { value: 1 },
         uOpacity: { value: 1 },
+        uFlash: { value: 0 },
         uColor: { value: color.clone().multiplyScalar(1.0) },
         uGold: { value: GOLD.clone() },
       },
@@ -497,7 +501,7 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
 
   /* ---------------- 创建 / 销毁 ---------------- */
 
-  function add(id, color, { spawnFrom = null, animate = true } = {}) {
+  function add(id, color, { spawnFrom = null, animate = true, celebrate = false } = {}) {
     if (items.has(id) || items.size >= MAX_PHOTOS) return null;
 
     const hsl = { h: 0, s: 0, l: 0 };
@@ -588,6 +592,12 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
       hoverTarget: 0,
       open: 0,
       openTarget: 0,
+      // 落位庆祝：只有"刚挂上去的"才闪，刷新恢复的照片不闪
+      celebrate,
+      landed: !celebrate,
+      flash: 0,
+      flashTime: -1,
+      sparkAt: 0,
     };
 
     itemGroup.position.copy(item.spawnFrom || slotFor(order.length, order.length + 1));
@@ -633,6 +643,18 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
   /* ---------------- 每帧更新 ---------------- */
 
   const cameraLocal = new THREE.Vector3();
+  const sparkPos = new THREE.Vector3();
+
+  /**
+   * 照片飞到位的那一帧。
+   * 三件事错开做才有层次：光环立刻出 → 60ms 后整体提亮到峰值 → 120ms 后炸一簇星火。
+   */
+  function landItem(item, time) {
+    item.landed = true;
+    item.flashTime = 0;
+    item.sparkAt = time + 0.12;
+    spawnRing(item);
+  }
 
   function updateItems(time, dt, cameraWorld) {
     const easeOut = (x) => 1 - Math.pow(1 - x, 3);
@@ -655,12 +677,28 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
         if (item.spawnFrom) item.group.position.lerpVectors(item.spawnFrom, item.slot, k);
         else item.group.position.copy(item.slot);
         item.group.scale.setScalar(0.05 + (item.targetScale - 0.05) * k);
+        if (item.progress >= 1 && !item.landed) landItem(item, time);
       } else {
         item.group.position.lerp(item.slot, Math.min(1, dt * 2.2));
         item.hover += (item.hoverTarget - item.hover) * Math.min(1, dt * 9);
         const desired = item.targetScale * (1 + item.hover * 0.85);
         const current = item.group.scale.x;
         item.group.scale.setScalar(current + (desired - current) * Math.min(1, dt * 6));
+      }
+
+      if (item.flashTime >= 0) {
+        item.flashTime += dt;
+        const t = item.flashTime;
+        // 60ms 冲到峰值，之后指数衰减，约 0.5s 回到常态
+        item.flash = t < 0.06 ? t / 0.06 : Math.exp(-(t - 0.06) * 7);
+        if (item.sparkAt && time >= item.sparkAt) {
+          item.sparkAt = 0;
+          onSparkle?.(item.group.getWorldPosition(sparkPos), 1.15);
+        }
+        if (item.flash < 0.004) {
+          item.flash = 0;
+          item.flashTime = -1;
+        }
       }
 
       item.open += (item.openTarget - item.open) * Math.min(1, dt * 7);
@@ -673,19 +711,21 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
       lidUniforms.uTime.value = time;
       bodyUniforms.uPixelRatio.value = pixelRatio;
       lidUniforms.uPixelRatio.value = pixelRatio;
+      bodyUniforms.uFlash.value = item.flash;
+      lidUniforms.uFlash.value = item.flash;
 
       // 盒盖飞出
-      const lift = item.hover * 0.06 + item.open * 0.8;
+      const lift = item.hover * 0.06 + item.open * 0.8 + item.flash * 0.22;
       item.lidGroup.position.y = 0.46 + lift;
-      item.lidGroup.rotation.z = item.open * 0.95 + item.hover * 0.06;
+      item.lidGroup.rotation.z = item.open * 0.95 + item.hover * 0.06 + item.flash * 0.16;
       item.lidGroup.rotation.x = item.open * 0.35;
 
       // 光尘与柔光
       item.trail.uniforms.uTime.value = time;
-      item.trail.uniforms.uIntensity.value = 0.8 + item.hover * 2.2 + item.open * 2.6;
-      item.auraMaterial.opacity = 0.08 + 0.08 * pulse + item.hover * 0.3 + item.open * 0.4;
-      item.aura.scale.setScalar(2.0 + item.hover * 0.5 + item.open * 0.8);
-      item.glowMaterial.opacity = item.open * 0.85;
+      item.trail.uniforms.uIntensity.value = 0.8 + item.hover * 2.2 + item.open * 2.6 + item.flash * 4.2;
+      item.auraMaterial.opacity = 0.08 + 0.08 * pulse + item.hover * 0.3 + item.open * 0.4 + item.flash * 0.5;
+      item.aura.scale.setScalar(2.0 + item.hover * 0.5 + item.open * 0.8 + item.flash * 0.9);
+      item.glowMaterial.opacity = item.open * 0.85 + item.flash * 0.8;
       item.glow.scale.setScalar(1.2 + item.open * 1.8);
 
       // 朝向相机
@@ -838,6 +878,7 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
         visible: i.group.visible,
         hover: +i.hover.toFixed(2),
         open: +i.open.toFixed(2),
+        flash: +i.flash.toFixed(2),
         scale: +i.group.scale.x.toFixed(3),
       }));
     },

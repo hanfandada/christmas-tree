@@ -145,7 +145,7 @@ const bursts = createBurstSystem(scene);
 const gestureFx = createGestureFx();
 
 const photoOrnaments = createPhotoOrnaments(world, {
-  onSparkle: (position) => bursts.spawn(position, 0.32),
+  onSparkle: (position, strength = 0.32) => bursts.spawn(position, strength),
 });
 
 // 过场：圣诞老人雪橇拖着照片绕树下降
@@ -501,6 +501,8 @@ async function addPhotoFromFile(file) {
     photoOrnaments.add(row.id, color, {
       spawnFrom: camera.position.clone(),
       animate: !reducedMotion,
+      // 新挂上去的才庆祝一下，刷新恢复的照片不闪
+      celebrate: true,
     });
   } catch (error) {
     console.error(error);
