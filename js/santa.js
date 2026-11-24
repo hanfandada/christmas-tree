@@ -501,6 +501,11 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
   function stagePhotos(entries) {
     clearPhotos();
     const list = entries.slice(0, MAX_PHOTOS);
+    // 竖屏时路径被横向压扁，照片如果还保持原尺寸就会挤成一坨：
+    // 按压扁系数同时缩小照片、加大上下错开的间距
+    const tighten = horizontal;
+    const sizeScale = 0.62 + 0.38 * tighten;
+    const laneScale = 1 + (1 - tighten) * 1.2;
     for (let i = 0; i < list.length; i++) {
       const entry = list[i];
 
@@ -535,11 +540,13 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
         aspect: entry.aspect || 1,
         target: entry.target ? entry.target.clone() : null,
         release: 0.07 + i * 0.045, // 依次放出来
-        delay: 0.05 + i * 0.017, // 跟在雪橇后面多远
+        delay: 0.06 + i * 0.022, // 跟在雪橇后面多远
         detach: 0.58 + i * 0.05, // 开始往树上送的时刻
         phase: Math.random() * Math.PI * 2,
         tilt: rand(-0.12, 0.12),
-        size: 1.0 - i * 0.04,
+        // 上下错开成一串，不然几张照片会在同一位置叠成一坨
+        lane: (i % 2 === 0 ? 1 : -1) * (0.34 + Math.floor(i / 2) * 0.26) * laneScale,
+        size: (1.15 - i * 0.02) * sizeScale,
         sprite,
         material,
         glow,
@@ -574,7 +581,11 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       if (p < item.detach || !item.target) {
         const sway = Math.sin(time * 2.1 + item.phase) * 0.3;
         const bob = Math.cos(time * 2.7 + item.phase * 1.7) * 0.2;
-        item.sprite.position.set(cursor.x + sway, cursor.y + bob, cursor.z + sway * 0.6);
+        item.sprite.position.set(
+          cursor.x + sway,
+          cursor.y + bob + item.lane,
+          cursor.z + sway * 0.6 + item.lane * 0.35
+        );
         const shrink = !item.target ? 1 - clamp01((p - item.detach) / 0.12) : 1;
         item.sprite.scale.set(
           Math.max(0.001, item.size * item.aspect * shrink),
@@ -587,6 +598,7 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
         // 送到树上：从脱离点拱一道弧线飞到对应礼物的位置，一边缩小淡出
         const k = clamp01((p - item.detach) / (arrive - item.detach));
         sampleAt(clamp01(item.detach - item.delay), detachAt);
+        detachAt.y += item.lane;
         targetLocal.copy(item.target);
         group.worldToLocal(targetLocal);
 
@@ -612,8 +624,8 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
 
       item.sprite.visible = item.material.opacity > 0.01;
       item.glow.position.copy(item.sprite.position);
-      item.glow.scale.setScalar(item.size * 1.8);
-      item.glowMaterial.opacity = item.sprite.visible ? item.material.opacity * 0.35 : 0;
+      item.glow.scale.setScalar(item.size * 2.2);
+      item.glowMaterial.opacity = item.sprite.visible ? item.material.opacity * 0.55 : 0;
       item.glow.visible = item.sprite.visible;
     }
   }

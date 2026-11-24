@@ -403,6 +403,46 @@ function popPhotoFromHand(x, y) {
 const forceSanta = query.get('santa') === '1';
 let santaPending = false;
 
+/**
+ * 把照片画进一张带金色发光边框的画布。
+ *
+ * 加边框不是为了好看：夜空是黑的、照片本身可能也是暗的，纯图贴上去直接消失。
+ * 一圈发光的边能在任何背景下勾出照片的轮廓，也顺手有了拍立得的味道。
+ */
+function framePhoto(bitmap) {
+  // 照片在屏幕上最多百来像素，贴图不需要原尺寸：长边压到 640，省显存也省上传时间
+  const scale = Math.min(1, 640 / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const pad = Math.max(10, Math.round(Math.min(width, height) * 0.075));
+  const canvas = document.createElement('canvas');
+  canvas.width = width + pad * 2;
+  canvas.height = height + pad * 2;
+  const ctx = canvas.getContext('2d');
+
+  ctx.drawImage(bitmap, pad, pad, width, height);
+
+  const stroke = Math.max(3, pad * 0.42);
+  const inset = stroke / 2 + pad * 0.12;
+  const radius = Math.max(4, pad * 0.5);
+
+  ctx.save();
+  ctx.lineWidth = stroke;
+  ctx.strokeStyle = 'rgba(255, 222, 164, 0.96)';
+  ctx.shadowColor = 'rgba(255, 186, 104, 0.95)';
+  ctx.shadowBlur = pad * 1.5;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(inset, inset, canvas.width - inset * 2, canvas.height - inset * 2, radius);
+  } else {
+    ctx.rect(inset, inset, canvas.width - inset * 2, canvas.height - inset * 2);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  return canvas;
+}
+
 /** 把树上最近挂的几张照片转成贴图，跟着雪橇飞一圈再送回树上 */
 async function buildSantaPhotos() {
   const ids = photosOnTree().slice(-6);
@@ -414,10 +454,7 @@ async function buildSantaPhotos() {
       // 走一遍 canvas：ImageBitmap 直接当贴图在部分浏览器里会上下翻，
       // 画到 canvas 上就是标准的 CanvasTexture 行为
       const bitmap = await createImageBitmap(row.blob);
-      const surface = document.createElement('canvas');
-      surface.width = bitmap.width;
-      surface.height = bitmap.height;
-      surface.getContext('2d').drawImage(bitmap, 0, 0);
+      const surface = framePhoto(bitmap);
       if (bitmap.close) bitmap.close();
 
       const texture = new THREE.CanvasTexture(surface);
