@@ -561,106 +561,181 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
 }
 
 /* ------------------------------------------------------------------ *
- * 车里坐的圣诞老人：把一张现成的插画"粒子化"
+ * 车里坐的圣诞老人：3D 模型 → 发光点云
  *
- * 自己用光点画过三版（线稿、实体表面撒点、3D 线框）都不像——这个尺幅下
- * 手画的形状撑不住。直接贴 SVG 又和整体粒子语汇打架。
- * 所以拿公有领域的 Classic Santa 插画（zeimusu，Openclipart #1545）当底稿：
- * 把它栅格化后按颜色采样像素，再用彩色小光点重新拼出来。
- * 形状来自成熟画稿，材质还是场景里的光点。
+ * 走过的弯路都在 git 历史里：手绘光点（形状撑不住）、按插画铺点（糊成白团）、
+ * 3D 线框（侧面塌成条码）、发光丝带（像速写）、实心 PBR 材质（形状最准，
+ * 但在这一片光点里像个塑料玩具被贴上去）。
+ *
+ * 现在把两件事拆开：**形状**交给真模型（CC0 的 Storybook Santa，5380 面），
+ * **材质**还是场景里的加法光点。在模型表面按面面积撒点、每点带法线做背面
+ * 剔除，再用物体空间的一盏主光调明暗。于是既有体积和遮挡关系，又是同一种
+ * 会闪的星光——和树、和驯鹿是同一套材质。
+ *
+ * 模型：Storybook Santa @ 3dassets.dev，CC0 1.0，见 README。
  * ------------------------------------------------------------------ */
 
-const SANTA_SRC = './assets/santa.svg';
+const SANTA_GLB = './assets/santa.glb';
+const SANTA_HEIGHT = 1.0; // 模型缩到这么高；雪橇车身高约 0.9
+const SANTA_FOOT_Y = -0.32; // 脚底沉到底板附近，看着像坐在车里
+const SANTA_SAMPLES = 6000; // 采样点；每个点再出两颗（亮芯 + 外晕）
+const SANTA_POINTS = SANTA_SAMPLES * 2;
+// 主光方向（物体空间）：镜头怎么转，光都从他左上方来
+const SANTA_LIGHT = new THREE.Vector3(-0.45, 0.72, 0.55).normalize();
 
 /**
- * 把插画"翻译"成一束发光的丝带。
+ * 在模型表面撒点。
  *
- * 试过的两条路：按颜色铺满点（糊成白团）、只抽黑线（像速写、不好看）。
- * 现在这条：仍然只取轮廓线（形状靠线才立得住），但每一笔的颜色从它
- * 旁边的布料上取——帽子那圈是红的、胡子那圈是白的——再用更大更柔的
- * 光点，让相邻的线连起来，看着就像一条条会发光的光带。
+ * 三角形按面积加权抽取：胡子、帽檐这种窄边也能分到足够的点，
+ * 不然全挤在面积最大的大衣上，脸就糊了。
  */
-function buildSantaCloud(image) {
-  const H = 300;
-  const W = Math.max(1, Math.round((H * image.width) / image.height));
-  const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(image, 0, 0, W, H);
-  const data = ctx.getImageData(0, 0, W, H).data;
+function sampleSantaModel(gltf) {
+  gltf.scene.updateMatrixWorld(true);
 
-  const at = (x, y) => (y * W + x) * 4;
-  const isDark = (i) => data[i + 3] > 150 && data[i] + data[i + 1] + data[i + 2] < 150;
-  const isFabric = (i) => data[i + 3] > 150 && data[i] + data[i + 1] + data[i + 2] >= 150 && data[i] + data[i + 1] + data[i + 2] < 720;
+  const tris = [];
+  const normalMatrix = new THREE.Matrix3();
+  const v = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  const e1 = new THREE.Vector3();
+  const e2 = new THREE.Vector3();
+  const n = new THREE.Vector3();
 
-  /** 在周围找一圈布料，取平均色；找不到就退回暖金色 */
-  const fabricNear = (x, y, out) => {
-    let r = 0;
-    let g = 0;
-    let b = 0;
-    let n = 0;
-    for (let dy = -6; dy <= 6; dy += 2) {
-      for (let dx = -6; dx <= 6; dx += 2) {
-        const px = x + dx;
-        const py = y + dy;
-        if (px < 0 || py < 0 || px >= W || py >= H) continue;
-        const i = at(px, py);
-        if (!isFabric(i)) continue;
-        r += data[i];
-        g += data[i + 1];
-        b += data[i + 2];
-        n += 1;
+  gltf.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    const geo = o.geometry;
+    const pos = geo.attributes.position;
+    if (!pos) return;
+    const idx = geo.index;
+    const base =
+      o.material && o.material.color ? o.material.color.clone() : new THREE.Color(0x8a8a8a);
+    normalMatrix.getNormalMatrix(o.matrixWorld);
+
+    const count = idx ? idx.count : pos.count;
+    for (let i = 0; i + 2 < count; i += 3) {
+      for (let k = 0; k < 3; k++) {
+        const j = idx ? idx.getX(i + k) : i + k;
+        v[k].fromBufferAttribute(pos, j).applyMatrix4(o.matrixWorld);
       }
+      e1.subVectors(v[1], v[0]);
+      e2.subVectors(v[2], v[0]);
+      n.crossVectors(e1, e2);
+      const area = n.length() * 0.5;
+      if (area < 1e-10) continue;
+      tris.push({
+        a: v[0].clone(),
+        b: v[1].clone(),
+        c: v[2].clone(),
+        n: n.clone().normalize(),
+        area,
+        color: base,
+      });
     }
-    if (!n) {
-      out[0] = 1.0;
-      out[1] = 0.86;
-      out[2] = 0.62;
-      return;
+  });
+  if (!tris.length) return null;
+
+  // 面积前缀和，二分抽三角形
+  const cumulative = new Float32Array(tris.length);
+  let total = 0;
+  for (let i = 0; i < tris.length; i++) {
+    total += tris[i].area;
+    cumulative[i] = total;
+  }
+
+  const pick = (r) => {
+    let lo = 0;
+    let hi = tris.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cumulative[mid] < r) lo = mid + 1;
+      else hi = mid;
     }
-    out[0] = r / n / 255;
-    out[1] = g / n / 255;
-    out[2] = b / n / 255;
+    return tris[lo];
   };
 
-  const unit = 1.35 / H;
-  const positions = [];
-  const sizes = [];
-  const colors = [];
-  const rgb = [0, 0, 0];
+  // 每个采样点出两颗：一颗小的当亮芯，一颗大而暗的当外晕。
+  // 只有实心点的话，这个尺寸下就是一把彩色噪点；加了外晕才连成"光"。
+  const positions = new Float32Array(SANTA_POINTS * 3);
+  const normals = new Float32Array(SANTA_POINTS * 3);
+  const colors = new Float32Array(SANTA_POINTS * 3);
+  const sizes = new Float32Array(SANTA_POINTS);
+  const edges = new Float32Array(SANTA_POINTS);
 
-  // 每隔一行取一次，线才不会被点糊死
-  for (let y = 0; y < H; y += 2) {
-    for (let x = 0; x < W; x += 2) {
-      const i = at(x, y);
-      if (!isDark(i)) continue;
-      if (Math.random() > 0.85) continue;
-      fabricNear(x, y, rgb);
-      // 白色布料提亮当高光，红色布料保留红
-      const lift = 0.55 + 0.45 * Math.max(rgb[0], rgb[1], rgb[2]);
-      const px = (x - W / 2) * unit + rand(-0.004, 0.004);
-      const py = (H / 2 - y) * unit + rand(-0.004, 0.004);
-      const pz = rand(-0.05, 0.05);
-      const size = rand(1.05, 1.75);
-      const cr = rgb[0] * lift * 1.15;
-      const cg = rgb[1] * lift * 1.15;
-      const cb = rgb[2] * lift * 1.15;
-      // 一根丝带是"亮芯 + 外晕"：同一处放一大一小两颗，
-      // 小的当芯、大的当晕，看起来才是一道光带而不是一串珠子
-      positions.push(px, py, pz);
-      sizes.push(size);
-      colors.push(cr, cg, cb);
-      positions.push(px, py, pz);
-      sizes.push(size * 1.9);
-      colors.push(cr * 0.16, cg * 0.16, cb * 0.16);
+  for (let i = 0; i < SANTA_SAMPLES; i++) {
+    const t = pick(Math.random() * total);
+    // 均匀取重心坐标
+    let u = Math.random();
+    let w = Math.random();
+    if (u + w > 1) {
+      u = 1 - u;
+      w = 1 - w;
+    }
+    const x = t.a.x + (t.b.x - t.a.x) * u + (t.c.x - t.a.x) * w;
+    const y = t.a.y + (t.b.y - t.a.y) * u + (t.c.y - t.a.y) * w;
+    const z = t.a.z + (t.b.z - t.a.z) * u + (t.c.z - t.a.z) * w;
+
+    // 法线加一点扰动，点云不会像机器撒的那么整齐
+    const jitter = 0.18;
+    const nx = t.n.x + rand(-jitter, jitter);
+    const ny = t.n.y + rand(-jitter, jitter);
+    const nz = t.n.z + rand(-jitter, jitter);
+
+    // 底色整体提亮：加法混合下暗的点等于没有
+    const lift = 1.1 + Math.random() * 0.4;
+    const r = Math.min(1, t.color.r * lift + 0.05);
+    const g = Math.min(1, t.color.g * lift + 0.05);
+    const b = Math.min(1, t.color.b * lift + 0.04);
+    const core = rand(0.85, 1.35);
+
+    // 同一个采样点出两颗：一颗铺在面上当体积（暗），一颗等描边（亮）。
+    // 着色器按 aEdge 分两条规则剔除，合起来就是"发光体 + 亮轮廓"。
+    for (let k = 0; k < 2; k++) {
+      const o = (i * 2 + k) * 3;
+      positions[o] = x;
+      positions[o + 1] = y;
+      positions[o + 2] = z;
+      normals[o] = nx;
+      normals[o + 1] = ny;
+      normals[o + 2] = nz;
+      colors[o] = r;
+      colors[o + 1] = g;
+      colors[o + 2] = b;
+      edges[i * 2 + k] = k;
+      sizes[i * 2 + k] = k === 0 ? core * 1.15 : core;
     }
   }
 
+  // 归位：水平居中、脚底落到 SANTA_FOOT_Y、整体缩到 SANTA_HEIGHT
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (let i = 0; i < SANTA_POINTS; i++) {
+    const x = positions[i * 3];
+    const y = positions[i * 3 + 1];
+    const z = positions[i * 3 + 2];
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  }
+  const scale = SANTA_HEIGHT / Math.max(1e-4, maxY - minY);
+  const cx = (minX + maxX) / 2;
+  const cz = (minZ + maxZ) / 2;
+  for (let i = 0; i < SANTA_POINTS; i++) {
+    positions[i * 3] = (positions[i * 3] - cx) * scale;
+    positions[i * 3 + 1] = (positions[i * 3 + 1] - minY) * scale + SANTA_FOOT_Y;
+    positions[i * 3 + 2] = (positions[i * 3 + 2] - cz) * scale;
+  }
+
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('aSize', new THREE.Float32BufferAttribute(sizes, 1));
-  geometry.setAttribute('aColor', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('aNormal', new THREE.BufferAttribute(normals, 3));
+  geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+  geometry.setAttribute('aEdge', new THREE.BufferAttribute(edges, 1));
   return geometry;
 }
 
@@ -668,33 +743,58 @@ function makeSantaMaterial(pixelRatio) {
   return new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
-    depthTest: false,
     blending: THREE.AdditiveBlending,
     uniforms: {
       uPixelRatio: { value: pixelRatio },
       uOpacity: { value: 0 },
       uTime: { value: 0 },
+      uLight: { value: SANTA_LIGHT.clone() },
+      uRim: { value: new THREE.Color(0xffc888) },
     },
     vertexShader: /* glsl */ `
       uniform float uPixelRatio;
       uniform float uOpacity;
       uniform float uTime;
+      uniform vec3 uLight;
+      uniform vec3 uRim;
 
       attribute float aSize;
       attribute vec3 aColor;
+      attribute vec3 aNormal;
+      attribute float aEdge;
 
       varying vec3 vColor;
       varying float vAlpha;
 
       void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vec3 p = position;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mv;
 
-        float twinkle = 0.8 + 0.2 * sin(uTime * 4.0 + position.x * 30.0 + position.y * 21.0);
+        vec3 viewN = normalize((modelViewMatrix * vec4(aNormal, 0.0)).xyz);
+        vec3 viewDir = normalize(mv.xyz);
+        // >0 是朝向镜头的一侧，<0 是背面
+        float facing = dot(viewN, viewDir);
+
+        // 填充点：只留朝镜头的半边，否则前后两层叠一起必糊
+        float fillMask = smoothstep(0.12, -0.04, facing);
+        // 描边点：只留掠射的那一圈——外轮廓，加上形体转折处的一圈等值线
+        float edgeMask = smoothstep(0.50, 0.76, 1.0 - abs(facing));
+        float cull = mix(fillMask, edgeMask, aEdge);
+
+        // 明暗：物体空间的主光。脸和肚子亮、侧面暗，体积才出得来
+        float key = dot(normalize(aNormal), normalize(uLight)) * 0.5 + 0.5;
+        float shade = 0.4 + 0.85 * pow(key, 0.9);
+        float rim = pow(1.0 - clamp(-facing, 0.0, 1.0), 3.0);
+
+        float twinkle = 0.9 + 0.1 * sin(uTime * 4.4 + p.y * 11.0 + p.x * 7.0);
         gl_PointSize = aSize * uPixelRatio * twinkle * (30.0 / max(1.0, -mv.z));
 
-        vColor = aColor;
-        vAlpha = uOpacity * twinkle;
+        // 面是暗的底，线是亮的光
+        vec3 body = aColor * shade * 0.52;
+        vec3 line = aColor * 1.2 + uRim * rim * 0.3;
+        vColor = mix(body, line, aEdge);
+        vAlpha = uOpacity * cull;
       }
     `,
     fragmentShader: /* glsl */ `
@@ -703,9 +803,9 @@ function makeSantaMaterial(pixelRatio) {
 
       void main() {
         float d = length(gl_PointCoord - 0.5);
-        float falloff = smoothstep(0.5, 0.05, d);
+        float falloff = smoothstep(0.5, 0.04, d);
         float alpha = falloff * vAlpha;
-        if (alpha < 0.01) discard;
+        if (alpha < 0.008) discard;
         gl_FragColor = vec4(vColor, alpha);
       }
     `,
@@ -779,13 +879,13 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
   rigGroup.scale.setScalar(1.3);
   group.add(rigGroup);
 
-  // 车里的人：一张插画粒子化出来的点云，每个点带自己的颜色
+  // 车里的人：真模型表面撒点成的一片星光，每个点带自己的颜色和法线
   const santaGroup = new THREE.Group();
-  santaGroup.position.set(0, 0.5, 0.02);
+  santaGroup.position.set(0, 0, 0.02);
   rigGroup.add(santaGroup);
   const santaMat = makeSantaMaterial(pixelRatio);
 
-  // 背后一团很淡的光晕：有了它，人是"在发亮"，而不是贴了一张画
+  // 背后一团很淡的光晕：有了它，人是"在发亮"，而不是贴在星空上
   const santaHalo = new THREE.Sprite(
     new THREE.SpriteMaterial({
       map: glowTexture,
@@ -793,25 +893,32 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       blending: THREE.AdditiveBlending,
       transparent: true,
       depthWrite: false,
-      depthTest: false,
       opacity: 0,
     })
   );
-  santaHalo.scale.setScalar(1.35);
+  santaHalo.position.set(0, 0.46, -0.2);
+  santaHalo.scale.setScalar(1.1);
   santaGroup.add(santaHalo);
-  let santaCloud = null;
-  {
-    const img = new Image();
-    img.decoding = 'async';
-    img.onload = () => {
-      santaCloud = new THREE.Points(buildSantaCloud(img), santaMat);
-      santaCloud.frustumCulled = false;
-      santaCloud.renderOrder = 9;
-      santaGroup.add(santaCloud);
-    };
-    img.onerror = () => console.warn('圣诞老人的底图没加载出来');
-    img.src = SANTA_SRC;
-  }
+
+  const santaCloud = new THREE.Points(new THREE.BufferGeometry(), santaMat);
+  santaCloud.frustumCulled = false;
+  santaCloud.renderOrder = 9;
+  santaCloud.visible = false;
+  santaGroup.add(santaCloud);
+
+  // 加载器和模型一共 400 来 KB，推迟到这时再拉，不挡开场
+  import('three/addons/loaders/GLTFLoader.js')
+    .then(({ GLTFLoader }) => new Promise((resolve, reject) => {
+      new GLTFLoader().load(SANTA_GLB, resolve, undefined, reject);
+    }))
+    .then((gltf) => {
+      const geometry = sampleSantaModel(gltf);
+      if (!geometry) return;
+      santaCloud.geometry.dispose();
+      santaCloud.geometry = geometry;
+      santaCloud.visible = true;
+    })
+    .catch((err) => console.warn('圣诞老人模型没加载出来', err));
 
   const rigMaterial = makeMaterial();
   const rigPoints = new THREE.Points(buildRigGeometry(), rigMaterial);
@@ -1070,8 +1177,8 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       rigMaterial.uniforms.uOpacity.value = alpha;
       santaMat.uniforms.uOpacity.value = alpha;
       santaMat.uniforms.uTime.value = time;
-      santaHalo.material.opacity = alpha * 0.22;
-      santaHalo.scale.setScalar(1.35 + Math.sin(time * 1.7) * 0.04);
+      santaHalo.material.opacity = alpha * 0.14;
+      santaHalo.scale.setScalar(1.1 + Math.sin(time * 1.7) * 0.03);
       rigMaterial.uniforms.uTime.value = time;
       trailMaterial.uniforms.uOpacity.value = alpha * 0.9;
       trailMaterial.uniforms.uTime.value = time;
@@ -1133,7 +1240,7 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       lampMaterial.dispose();
       rearMaterial.dispose();
       glowTexture.dispose();
-      santaCloud?.geometry.dispose();
+      santaCloud.geometry.dispose();
       santaMat.dispose();
       santaHalo.material.dispose();
       group.clear();

@@ -206,11 +206,13 @@ heart3d.setPixelRatio(pixelRatio);
 
 const params = query;
 const toWho = params.get('to');
-const gestureHint = coarsePointer
-  ? '拖拽旋转 · 双指缩放 · 轻点礼物拆开'
-  : '点击礼物拆开 · 拖入照片挂上树 · 点星星再看一遍雪橇';
 greetingEl.textContent = 'Merry Christmas';
-subEl.textContent = toWho ? `To ${toWho} · ${gestureHint}` : gestureHint;
+// 平时不显示任何操作提示：画面里全是光点，多一行字就脏了。
+// 只有 ?to= 定制的称呼值得单独占一行
+if (toWho) {
+  subEl.textContent = `To ${toWho}`;
+  subEl.hidden = false;
+}
 
 /* ---------------- 指针：视差与点击星火 ---------------- */
 
@@ -515,7 +517,6 @@ async function playSanta({ force = false } = {}) {
       target: card.target,
     }));
     santa.play(entries, elapsed);
-    showToast(entries.length ? `圣诞老人送回了 ${entries.length} 张照片` : '圣诞老人从树上飞过去了');
     return true;
   } finally {
     santaPending = false;
@@ -535,7 +536,6 @@ async function addPhotoFromFile(file) {
     photoRows.set(row.id, row);
     // 照片不再挂死在某个盒子上，所以这里只让一个随机盒子闪一下当作回执
     photoOrnaments.flashRandom();
-    showToast(`照片已放进礼物（共 ${photoRows.size} 张）`);
   } catch (error) {
     console.error(error);
     showToast('这张照片没能挂上去，换一张试试');
@@ -548,7 +548,6 @@ async function hydratePhotos() {
     for (const row of rows) {
       photoRows.set(row.id, row);
     }
-    if (rows.length) showToast(`树上有 ${rows.length} 张照片`);
     syncDefaultGifts();
   } catch (error) {
     console.error(error);
@@ -691,7 +690,6 @@ async function openCompose() {
 
     clearTimeout(comboTimer);
     comboTimer = window.setTimeout(() => endCompose(), COMBO_WINDOW);
-    showToast('再握一拳，把它们拼成 Merry Christmas');
     return true;
   } finally {
     composeBusy = false;
@@ -759,7 +757,6 @@ viewerDeleteBtn?.addEventListener('click', async () => {
   await removePhoto(id);
   photoRows.delete(id);
   if (lastShownPhoto === id) lastShownPhoto = null;
-  showToast('已经从礼物里取出来了');
 });
 
 window.addEventListener('keydown', (event) => {
@@ -856,7 +853,7 @@ const handTracker = createHandTracker({
         // 隐私模式存不了，最多下次多等一会儿
       }
       // 拳头比张开的手难检测，先张手让模型锁定，再握起来跟踪才稳
-      showToast('先张手让摄像头看到你，再比「我爱你」/ 握拳；组合技：握拳 → 张开 → 再握拳');
+      showToast('张手让镜头看到你 · 组合技：握拳 → 张开 → 再握拳');
     } else if (gestureMessages[status]) {
       showToast(gestureMessages[status]);
     }

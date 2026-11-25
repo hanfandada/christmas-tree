@@ -303,7 +303,8 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
 
   function seedParticles(treePositions, textInfo, photoItems) {
     const treeCount = treePositions ? treePositions.length / 3 : 0;
-    const cloudRadius = Math.max(3.4, TREE.baseRadius * 1.9);
+    // 炸开的范围：稍微给大一点，颗粒一散才不显得是一团挤在树心
+    const cloudRadius = Math.max(4.3, TREE.baseRadius * 2.4);
     const green = new THREE.Color();
     const warm = new THREE.Color();
 
@@ -451,8 +452,8 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
         from: entry.from ? entry.from.clone() : new THREE.Vector3(),
         aspect: entry.aspect || 1,
         phase: Math.random() * Math.PI * 2,
-        radius: rand(2.4, 3.6),
-        lift: rand(-0.7, 1.4),
+        radius: rand(3.0, 4.5),
+        lift: rand(-0.9, 1.8),
         sprite,
         material: spriteMaterial,
         texture: entry.texture,
