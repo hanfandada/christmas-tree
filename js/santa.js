@@ -237,7 +237,10 @@ function addSleighBody(buf) {
   sampleSurface(geometry, 900, buf, 1.25, 0.45);
 
   // 两侧轮廓：更亮更密的金色点，远处也认得出来是雪橇
-  const outline = shape.getPoints(260);
+  // 按弧长均匀取点。getPoints 是按曲线参数取的，圆弧段会挤上一大堆点、
+  // 直线段几乎没点，于是车头车尾亮成两个白月牙、车厢里一片黑，
+  // 坐在车里的人就被那两团光吃掉了
+  const outline = shape.getSpacedPoints(170);
   for (const side of [-1, 1]) {
     const z = (side * depth) / 2;
     for (const p of outline) {
@@ -246,7 +249,7 @@ function addSleighBody(buf) {
         p.x + rand(-0.008, 0.008),
         p.y + rand(-0.008, 0.008),
         z + rand(-0.02, 0.02),
-        rand(1.5, 2.2),
+        rand(1.2, 1.65),
         1
       );
     }
@@ -401,25 +404,128 @@ function addDeer(buf, ox, oy, s, phase = 0) {
   }
 }
 
-/** 坐在车里的人：有个人形轮廓，远远一看就知道是圣诞老人 */
+/**
+ * 坐在车里的圣诞老人。
+ * 座面在 y=0.1、靠背在 x -0.4 一带，所以人是"坐"进去的：
+ * 大腿前伸、小腿垂下、靴子朝前，上身略微后仰，再往前伸手抓缰绳。
+ *
+ * 画法跟驯鹿一致，用线稿而不是纯椭圆——一个椭圆加一坨白点，
+ * 放大看是个红气球，缩小看什么都不是。这里先把背、胸、下摆勾出来，
+ * 再压上大胡子、帽檐和下摆的白毛边，白比红好认。
+ */
 function addSantaFigure(buf) {
-  // 红色身体
-  for (let i = 0; i < 34; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.random());
-    pushPoint(buf, -0.04 + Math.cos(a) * 0.2 * r, 0.4 + Math.sin(a) * 0.15 * r, rand(-0.12, 0.12), rand(1.0, 1.8), 0.22);
-  }
-  // 头 + 帽子 + 胡子
-  ellipse(buf, -0.02, 0.68, 0.12, 0.12, 0, 20, 1.9, 1);
-  stroke(buf, -0.02, 0.79, -0.13, 0.9, 0, 6, 1.6, 1);
-  pushPoint(buf, -0.15, 0.93, 0, 3.4, 1);
-  stroke(buf, 0.05, 0.63, 0.09, 0.55, 0, 5, 1.6, 1);
+  const start = buf.positions.length / 3;
+  const Z = 0.07; // 稍微偏近侧，免得和车身中线的点糊在一起
+  const RED = 0.06; // 大衣：偏冷的那一端，也就是红
+  const WHITE = 1; // 毛边、胡子：暖白
+  const SKIN = 0.85;
 
-  // 车尾的礼物袋
-  ellipse(buf, -0.62, 0.32, 0.18, 0.18, 0, 14, 1.5, 0.85);
-  pushPoint(buf, -0.62, 0.5, 0, 2.6, 1);
+  // ---- 大衣轮廓：背 → 肩 → 胸 → 肚子 → 下摆 ----
+  const back = [
+    [-0.18, 0.15],
+    [-0.21, 0.33],
+    [-0.14, 0.5],
+    [0.0, 0.555],
+  ];
+  for (let i = 0; i < back.length - 1; i++) {
+    stroke(buf, back[i][0], back[i][1], back[i + 1][0], back[i + 1][1], Z + 0.09, 6, 2.0, RED, 1.1);
+  }
+  const chest = [
+    [0.0, 0.555],
+    [0.14, 0.47],
+    [0.175, 0.29],
+    [0.14, 0.15],
+  ];
+  for (let i = 0; i < chest.length - 1; i++) {
+    stroke(buf, chest[i][0], chest[i][1], chest[i + 1][0], chest[i + 1][1], Z + 0.1, 6, 2.0, RED, 1.15);
+  }
+  stroke(buf, 0.14, 0.15, -0.18, 0.15, Z + 0.1, 8, 2.0, RED, 1.1); // 下摆
+
+  // 大衣不是个空圈：里面塞满暗红点，侧面看才是实心的身子
+  for (let i = 0; i < 96; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.pow(Math.random(), 0.45);
+    pushPoint(
+      buf,
+      -0.02 + Math.cos(a) * 0.145 * r,
+      0.35 + Math.sin(a) * 0.185 * r,
+      Z + rand(-0.08, 0.08),
+      rand(0.9, 1.6),
+      RED,
+      0.75
+    );
+  }
+
+  // 下摆的白毛边 + 腰带金扣
+  stroke(buf, -0.17, 0.158, 0.14, 0.158, Z + 0.11, 10, 1.9, WHITE, 1.25);
+  stroke(buf, -0.19, 0.255, 0.16, 0.255, Z + 0.12, 9, 1.3, 0, 0.7);
+  pushPoint(buf, 0.0, 0.255, Z + 0.13, 2.8, 1);
+
+  // ---- 腿：大腿前伸 → 小腿垂下 → 靴子朝前 ----
+  stroke(buf, -0.08, 0.14, 0.17, 0.155, Z + 0.07, 7, 1.7, RED, 1);
+  stroke(buf, 0.17, 0.155, 0.21, 0.0, Z + 0.07, 6, 1.6, RED, 1);
+  stroke(buf, 0.2, 0.005, 0.33, -0.06, Z + 0.08, 6, 2.0, 0, 1.2); // 靴子
+  // 远侧那条腿，压暗
+  stroke(buf, -0.11, 0.13, 0.14, 0.14, Z - 0.08, 5, 1.1, RED, 0.4);
+  stroke(buf, 0.14, 0.14, 0.18, 0.0, Z - 0.08, 5, 1.0, RED, 0.4);
+
+  // ---- 手臂：往前伸，抓缰绳 ----
+  stroke(buf, 0.05, 0.49, 0.22, 0.43, Z + 0.1, 6, 1.7, RED, 1.1);
+  stroke(buf, 0.22, 0.43, 0.38, 0.39, Z + 0.1, 6, 1.6, RED, 1.1);
+  pushPoint(buf, 0.395, 0.388, Z + 0.1, 2.8, WHITE, 1.3); // 毛袖口
+  pushPoint(buf, 0.44, 0.372, Z + 0.1, 2.6, SKIN, 1.15); // 手
+
+  // ---- 大胡子：从下巴铺到胸口，往下收成尖 ----
+  // 一定要比帽檐低，中间留出脸，不然白胡子会和白帽檐连成一坨
+  for (let i = 0; i < 34; i++) {
+    const t = Math.random();
+    const y = 0.648 - t * 0.225;
+    const half = 0.078 * (1 - t) + 0.016 * t;
+    pushPoint(
+      buf,
+      0.1 + rand(-half, half) + t * 0.015,
+      y,
+      Z + 0.1 + rand(-0.03, 0.03),
+      rand(1.1, 1.8),
+      WHITE,
+      1.15
+    );
+  }
+  // 胡子的两条边，勾出来才不是一团白雾
+  for (let i = 0; i < 8; i++) {
+    const t = i / 7;
+    const half = 0.078 * (1 - t) + 0.016 * t;
+    const y = 0.648 - t * 0.225;
+    pushPoint(buf, 0.1 - half + t * 0.015, y, Z + 0.12, 1.9, WHITE, 1.3);
+    pushPoint(buf, 0.1 + half + t * 0.015, y, Z + 0.12, 1.9, WHITE, 1.3);
+  }
+
+  // ---- 脸：夹在白胡子和白帽檐中间的一条 ----
+  ellipse(buf, 0.105, 0.705, 0.075, 0.058, Z + 0.09, 16, 1.7, SKIN, 1.15);
+  pushPoint(buf, 0.152, 0.716, Z + 0.14, 3.0, 0.25, 1.3); // 眼睛
+
+  // ---- 尖帽子：白帽檐 → 红锥体往后再垂 → 绒球 ----
+  stroke(buf, 0.0, 0.768, 0.2, 0.762, Z + 0.1, 9, 2.0, WHITE, 1.2);
+  stroke(buf, 0.045, 0.782, -0.075, 0.868, Z + 0.08, 6, 1.8, RED, 1.15);
+  stroke(buf, -0.075, 0.868, -0.215, 0.852, Z + 0.07, 6, 1.7, RED, 1.1);
+  pushPoint(buf, -0.252, 0.846, Z + 0.07, 3.6, WHITE, 1.35);
+
+  // ---- 车尾的礼物袋 ----
+  ellipse(buf, -0.68, 0.33, 0.17, 0.17, 0, 16, 1.5, 0.8, 0.9);
+  pushPoint(buf, -0.68, 0.5, 0, 2.6, 1);
   // 车头挂的小灯
-  pushPoint(buf, 0.52, 0.26, 0, 3.0, 1);
+  pushPoint(buf, 0.5, 0.26, 0, 3.0, 1);
+
+  // 整体放大一点。雪橇在画面里只有 140px 宽，人只有 50px 高，
+  // 按真实比例画出来就是"车里有团红的"，所以这里以座位为支点放大，
+  // 让圣诞老人比写实比例稍微夸张一点
+  const SCALE = 1.18;
+  const end = buf.positions.length / 3;
+  for (let i = start; i < end; i++) {
+    buf.positions[i * 3] *= SCALE;
+    buf.positions[i * 3 + 1] = 0.1 + (buf.positions[i * 3 + 1] - 0.1) * SCALE;
+    buf.positions[i * 3 + 2] *= SCALE;
+  }
 }
 
 function buildRigGeometry() {
