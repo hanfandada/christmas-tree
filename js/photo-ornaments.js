@@ -656,7 +656,7 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
     spawnRing(item);
   }
 
-  function updateItems(time, dt, cameraWorld) {
+  function updateItems(time, dt, cameraWorld, reveal = 1) {
     const easeOut = (x) => 1 - Math.pow(1 - x, 3);
     if (cameraWorld && group.parent) {
       cameraLocal.copy(cameraWorld);
@@ -742,7 +742,8 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
         const len = Math.hypot(dx, dz) || 1;
         facing = nx * (dx / len) + nz * (dz / len);
       }
-      const visibility = THREE.MathUtils.smoothstep(facing, -0.05, 0.3);
+      // 背面淡出 × 开场淡入：树叶亮完之前礼物整体不可见
+      const visibility = THREE.MathUtils.smoothstep(facing, -0.05, 0.3) * reveal;
       item.group.visible = visibility > 0.02;
 
       bodyUniforms.uOpacity.value = visibility;
@@ -808,13 +809,13 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
     });
   }
 
-  function updateRings(dt) {
+  function updateRings(dt, reveal = 1) {
     for (let i = rings.length - 1; i >= 0; i--) {
       const ring = rings[i];
       ring.life += dt;
       const k = Math.min(1, ring.life / ring.duration);
       ring.mesh.scale.setScalar(ring.startScale * (1 + k * 3.2));
-      ring.material.opacity = Math.pow(1 - k, 1.6) * 0.9;
+      ring.material.opacity = Math.pow(1 - k, 1.6) * 0.9 * reveal;
       ring.mesh.lookAt(cameraLocal);
       if (k >= 1) {
         group.remove(ring.mesh);
@@ -829,9 +830,9 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
     add,
     remove,
     clear,
-    update(time, dt, cameraWorld) {
-      updateItems(time, dt, cameraWorld);
-      updateRings(dt);
+    update(time, dt, cameraWorld, reveal = 1) {
+      updateItems(time, dt, cameraWorld, reveal);
+      updateRings(dt, reveal);
     },
     pick,
     setPixelRatio(value) {

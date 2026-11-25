@@ -83,7 +83,8 @@ export function createOrnaments(count) {
         const pulse = Math.pow(wave, 2.2);
         const intensity = reveal * (0.35 + 0.95 * pulse);
 
-        item.material.color.copy(item.baseColor).multiplyScalar(0.6 + intensity * 1.5);
+        // 没亮之前要真的看不见：原来这里有个 0.6 的基础亮度，礼物会先于树叶亮起来
+        item.material.color.copy(item.baseColor).multiplyScalar((0.04 + 0.56 * reveal) + intensity * 1.5);
         item.haloMaterial.opacity = intensity * 0.38;
 
         // 极轻微的上下浮动，像挂在枝头被风带着

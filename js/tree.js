@@ -101,7 +101,7 @@ export function createTree(count) {
         col = mix(col, uWarm, aTint * 0.85);
 
         vColor = col;
-        vAlpha = reveal * (0.11 + 0.33 * brightness);
+        vAlpha = reveal * (0.15 + 0.42 * brightness);
       }
     `,
     fragmentShader: /* glsl */ `
@@ -180,7 +180,7 @@ export function createTree(count) {
         float wave = 0.22 + 0.78 * pow(0.5 + 0.5 * sin(aHeight * 46.0 - uTime * 2.8 + aPhase * 0.4), 4.0);
 
         gl_PointSize = aSize * uPixelRatio * (30.0 / max(0.6, -mv.z)) * (0.8 + wave * 0.5);
-        vAlpha = reveal * wave * 0.72;
+        vAlpha = reveal * wave * 0.8;
       }
     `,
     fragmentShader: /* glsl */ `

@@ -930,7 +930,7 @@ function animate() {
 
   const ornamentReveal = reducedMotion
     ? 1
-    : clamp01((elapsed - TIMELINE.stringDelay) / 1.5);
+    : clamp01((elapsed - TIMELINE.stringDelay) / 1.2);
 
   const starReveal = reducedMotion ? 1 : clamp01((elapsed - TIMELINE.starDelay) / 0.95);
 
@@ -941,7 +941,7 @@ function animate() {
   snow.update(elapsed);
   sky.update(elapsed);
   bursts.update(dt);
-  photoOrnaments.update(elapsed, dt, camera.position);
+  photoOrnaments.update(elapsed, dt, camera.position, ornamentReveal);
   santa.update(elapsed, dt);
   compose.update(elapsed, dt, camera);
   heart3d.update(elapsed, dt, camera);

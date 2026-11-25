@@ -51,7 +51,9 @@ export const CAMERA = {
 export const TIMELINE = {
   growDelay: 0.45,
   growDuration: 3.6, // 1.9 太快，差不多是"一眨眼就亮完了"，拉到 3.6 才有"慢慢亮起来"的感觉
-  stringDelay: 2.2, // 等光流到树腰再让灯串醒过来
+  // 礼物 / 挂饰必须等树叶整体亮完（growDelay + growDuration ≈ 4.05 秒）才出来，
+  // 否则会出现"树还黑着，礼物先亮"的顺序错乱
+  stringDelay: 4.0,
   starDelay: 0.15, // 星星先亮，光是它撒下来的
-  hudDelay: 4.3,
+  hudDelay: 5.3,
 };
