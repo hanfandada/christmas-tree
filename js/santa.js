@@ -576,7 +576,6 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
     // 按压扁系数同时缩小照片、加大上下错开的间距
     const tighten = horizontal;
     const sizeScale = 0.62 + 0.38 * tighten;
-    const laneScale = 1 + (1 - tighten) * 1.2;
     for (let i = 0; i < list.length; i++) {
       const entry = list[i];
 
@@ -611,14 +610,11 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
         aspect: entry.aspect || 1,
         target: entry.target ? entry.target.clone() : null,
         release: 0.07 + i * 0.045, // 依次放出来
-        delay: 0.06 + i * 0.022, // 跟在雪橇后面多远
+        delay: 0.05 + i * 0.038, // 跟在雪橇后面多远：间距拉开，卡片才不叠
         detach: 0.58 + i * 0.05, // 开始往树上送的时刻
         phase: Math.random() * Math.PI * 2,
-        // 只用一点点固定倾斜，不要每张随机——随机倾斜是"乱"的主要来源
-        tilt: (i % 2 === 0 ? 1 : -1) * 0.045,
-        // 一条竖向的流：左右只小幅交替，主要靠向下位移把照片排开
-        lane: (i % 2 === 0 ? 0.08 : -0.08) * laneScale - i * 0.11,
-        // 尺寸统一，之前越往后越小反而显得散
+        // 排成一排：同一时刻、同一条路径、同一个大小，不做左右交替也不加随机倾斜
+        tilt: 0,
         size: sizeScale,
         sprite,
         material,
@@ -652,27 +648,22 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       sampleAt(clamp01(p - item.delay), cursor);
 
       if (p < item.detach || !item.target) {
-        // 摇摆收小：拖尾要"被雪橇牵着走"，不是各飘各的
-        const sway = Math.sin(time * 2.1 + item.phase) * 0.08;
-        const bob = Math.cos(time * 2.7 + item.phase * 1.7) * 0.06;
-        item.sprite.position.set(
-          cursor.x + sway,
-          cursor.y + bob + item.lane,
-          cursor.z + sway * 0.6 + item.lane * 0.35
-        );
+        // 完全贴着雪橇走过的轨迹，一个跟一个，排成一条线
+        group.worldToLocal(cursor);
+        item.sprite.position.copy(cursor);
         const shrink = !item.target ? 1 - clamp01((p - item.detach) / 0.12) : 1;
         item.sprite.scale.set(
           Math.max(0.001, item.size * item.aspect * shrink),
           Math.max(0.001, item.size * shrink),
           1
         );
-        item.material.rotation = item.tilt + Math.sin(time * 1.2 + item.phase) * 0.03;
+        item.material.rotation = item.tilt;
         item.material.opacity = clamp01((p - item.release) / 0.05) * (shrink > 0.02 ? 1 : 0);
       } else {
         // 送到树上：从脱离点拱一道弧线飞到对应礼物的位置，一边缩小淡出
         const k = clamp01((p - item.detach) / (arrive - item.detach));
         sampleAt(clamp01(item.detach - item.delay), detachAt);
-        detachAt.y += item.lane;
+        group.worldToLocal(detachAt);
         targetLocal.copy(item.target);
         group.worldToLocal(targetLocal);
 
@@ -708,6 +699,9 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
     for (let i = 0; i < TRAIL; i++) {
       const back = (i / TRAIL) * 0.075;
       sampleAt(clamp01(p - back), cursor);
+      // 路径点是世界坐标，但这个 Points 挂在已经平移/旋转过的 group 上，
+      // 不换算成本地坐标就会被整体再偏移一次（拖尾会斜着飞出去）
+      group.worldToLocal(cursor);
       const spread = 0.25 + back * 9;
       trailPositions[i * 3] = cursor.x + trailJitter[i * 2] * spread;
       trailPositions[i * 3 + 1] = cursor.y + trailJitter[i * 2 + 1] * spread * 0.7 + back * 0.5;
@@ -765,6 +759,8 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       group.rotation.y = sampleYaw[index];
       group.rotation.z = sampleBank[index];
       group.rotation.x = Math.sin(time * 1.3) * 0.04;
+      // 下面要把世界坐标换成本地坐标，先把本帧的变换算出来
+      group.updateMatrixWorld();
 
       updateTrail(local);
       updatePhotos(local, time);
