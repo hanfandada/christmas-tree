@@ -2,7 +2,7 @@
  * 手势反馈特效层（Canvas 2D，贴在主画布上）。
  *
  * 全部用粒子拼，不用整块贴图：
- *  - 比心：心形轮廓 + 内部填充几百颗光点，从外围飞入、呼吸、再炸开
+ *  - 🤟 我爱你：把 🤟 的剪影采样成点云，从外围飞入、呼吸、再炸开
  *  - 竖大拇指：把 👍 的剪影采样成点云，同样用光点拼出来（不画 emoji）
  *  - 冲击波也是点组成的环，不是实线圆
  *  - 再加一层飞散星火，带拖尾
@@ -11,111 +11,41 @@
  */
 
 const TAU = Math.PI * 2;
-const LIFE = { heart: 2.0, thumb: 1.9, pulse: 1.0 };
+const LIFE = { love: 2.0, thumb: 1.9, pulse: 1.0 };
 
 const isSmallScreen = () => Math.min(window.innerWidth, window.innerHeight) < 620;
 
 /* ---------------- 形状采样 ---------------- */
 
-/** 心形参数方程，归一化到 [-1, 1]（+y 朝上） */
-function sampleHeartOutline(steps = 260) {
-  const raw = [];
-  for (let i = 0; i < steps; i++) {
-    const a = (i / steps) * TAU;
-    raw.push([
-      16 * Math.pow(Math.sin(a), 3),
-      13 * Math.cos(a) - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a),
-    ]);
-  }
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const [x, y] of raw) {
-    minX = Math.min(minX, x);
-    maxX = Math.max(maxX, x);
-    minY = Math.min(minY, y);
-    maxY = Math.max(maxY, y);
-  }
-  const span = (maxX - minX) / 2 || 1;
-  const cx = (maxX + minX) / 2;
-  const cy = (maxY + minY) / 2;
-  // 等比缩放：心形是宽 > 高，不能按两个轴分别拉成正方形
-  return raw.map(([x, y]) => [(x - cx) / span, (y - cy) / span]);
-}
-
-const HEART_OUTLINE = sampleHeartOutline();
-
 /**
- * 心形点云：轮廓密一点（形状才清楚），内部稀一点（有体积感），
- * 再撒一圈更暗的浮尘。
+ * 每种手势的剪影都从一个 emoji 字形采样出来（只取 alpha，不画 emoji 本体）。
+ * 配色区分开：👍 偏金、🤟 偏玫瑰。
  */
-/** 射线法判断点是否在心形内部，用来做均匀填充 */
-function insideHeart(x, y) {
-  let inside = false;
-  for (let i = 0, j = HEART_OUTLINE.length - 1; i < HEART_OUTLINE.length; j = i++) {
-    const [xi, yi] = HEART_OUTLINE[i];
-    const [xj, yj] = HEART_OUTLINE[j];
-    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
+const GLYPH = {
+  thumb: {
+    char: '👍',
+    rimShare: 0.58,
+    rimSize: [5.5, 9.5],
+    innerSize: [2.6, 5],
+    edge: ['white', 'gold', 'gold', 'amber'],
+    inner: ['gold', 'amber'],
+  },
+  // 手的剪影如果实心填充，缩到 150px 就糊成一团了，
+  // 所以 🤟 几乎只取轮廓：更像线稿，手型才认得出来
+  love: {
+    char: '🤟',
+    rimShare: 0.86,
+    rimSize: [4.2, 7.2],
+    innerSize: [2.4, 4.4],
+    edge: ['white', 'rose', 'rose', 'pink'],
+    inner: ['rose', 'pink', 'gold'],
+  },
+};
 
-function buildHeartPoints(total) {
-  const rim = Math.round(total * 0.5);
-  const fill = Math.round(total * 0.35);
-  const dust = total - rim - fill;
-  const points = [];
+const pickFrom = (list) => list[(Math.random() * list.length) | 0];
 
-  for (let i = 0; i < rim; i++) {
-    const [x, y] = HEART_OUTLINE[(Math.random() * HEART_OUTLINE.length) | 0];
-    points.push({
-      x: x + rand(-0.02, 0.02),
-      y: y + rand(-0.02, 0.02),
-      size: rand(6, 12),
-      depth: rand(0.6, 1.15),
-      seed: Math.random(),
-      tint: Math.random() < 0.3 ? 'white' : Math.random() < 0.18 ? 'gold' : 'pink',
-    });
-  }
-
-  // 内部用拒绝采样填，避免把轮廓点按比例缩向中心、在竖中线上堆出一条线
-  let placed = 0;
-  let guard = 0;
-  while (placed < fill && guard < fill * 60) {
-    guard += 1;
-    const x = rand(-1, 1);
-    const y = rand(-0.72, 0.72);
-    if (!insideHeart(x, y)) continue;
-    placed += 1;
-    points.push({
-      x,
-      y,
-      size: rand(4, 7.8),
-      depth: rand(0.5, 0.95),
-      seed: Math.random(),
-      tint: Math.random() < 0.12 ? 'white' : Math.random() < 0.2 ? 'gold' : 'pink',
-    });
-  }
-
-  for (let i = 0; i < dust; i++) {
-    const [x, y] = HEART_OUTLINE[(Math.random() * HEART_OUTLINE.length) | 0];
-    const k = rand(1.02, 1.5);
-    points.push({
-      x: x * k,
-      y: y * k,
-      size: rand(2, 4.2),
-      depth: rand(0.2, 0.6),
-      seed: Math.random(),
-      tint: Math.random() < 0.5 ? 'pink' : 'gold',
-    });
-  }
-
-  return finishPoints(points);
-}
-
-/** 把 👍 画进离屏画布，按 alpha 采样成点云：边缘点亮、内部点暗 */
-function buildThumbPoints(total) {
+/** 把字形画进离屏画布，按 alpha 采样成点云：边缘点亮、内部点暗 */
+function buildGlyphPoints(total, glyph) {
   const size = 256;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
@@ -123,7 +53,7 @@ function buildThumbPoints(total) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = `${Math.round(size * 0.72)}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
-  ctx.fillText('👍', size / 2, size * 0.52);
+  ctx.fillText(glyph.char, size / 2, size * 0.52);
 
   const data = ctx.getImageData(0, 0, size, size).data;
   const alphaAt = (x, y) => data[(y * size + x) * 4 + 3];
@@ -141,7 +71,7 @@ function buildThumbPoints(total) {
   }
 
   const pick = [];
-  const rimCount = Math.round(total * 0.58);
+  const rimCount = Math.round(total * glyph.rimShare);
   for (let i = 0; i < rimCount && rim.length; i++) {
     pick.push({ p: rim[(Math.random() * rim.length) | 0], edge: true });
   }
@@ -170,10 +100,10 @@ function buildThumbPoints(total) {
     pick.map(({ p, edge }) => ({
       x: (p[0] - cx) / span,
       y: (p[1] - cy) / span,
-      size: edge ? rand(5.5, 9.5) : rand(2.6, 5),
+      size: edge ? rand(glyph.rimSize[0], glyph.rimSize[1]) : rand(glyph.innerSize[0], glyph.innerSize[1]),
       depth: edge ? rand(0.75, 1.15) : rand(0.3, 0.7),
       seed: Math.random(),
-      tint: edge ? (Math.random() < 0.45 ? 'white' : 'gold') : Math.random() < 0.5 ? 'amber' : 'gold',
+      tint: pickFrom(edge ? glyph.edge : glyph.inner),
     }))
   );
 }
@@ -225,8 +155,8 @@ export function createGestureFx() {
     white: makeDotSprite('255, 238, 246'),
   };
 
-  const heartPoints = buildHeartPoints(isSmallScreen() ? 580 : 1200);
-  let thumbPoints = null; // 第一次用到再采样，省启动开销
+  let lovePoints = null; // 第一次用到再采样，省启动开销
+  let thumbPoints = null;
 
   const canvas = document.createElement('canvas');
   canvas.className = 'fx-layer';
@@ -262,7 +192,7 @@ export function createGestureFx() {
 
     const x = pointer?.x ?? 0;
     const y = pointer?.y ?? 0;
-    // 握拳 / 张开手掌走冷白色，和比心的玫瑰色、大拇指的金色区分开
+    // 握拳 / 张开手掌走冷白色，和 🤟 的玫瑰色、大拇指的金色区分开
     const isPalm = pointer?.kind === 'fist' || pointer?.kind === 'open';
     const tint = isPalm ? 'white' : pointer?.kind === 'thumb' ? 'gold' : 'rose';
     const fillTint = isPalm ? 'gold' : pointer?.kind === 'thumb' ? 'amber' : 'pink';
@@ -312,15 +242,13 @@ export function createGestureFx() {
     const envelope = Math.min(p / 0.08, 1) * fade;
 
     const scale =
-      baseScale * (0.85 + 0.25 * settle) * (1 + 0.05 * Math.sin(time * 5)) * (burst.kind === 'thumb' ? 1.2 : 1.12);
+      baseScale * (0.85 + 0.25 * settle) * (1 + 0.05 * Math.sin(time * 5)) * (burst.kind === 'thumb' ? 1.2 : 1.34);
     const rise = p * p * 40;
     const rot = Math.sin(time * 0.7 + burst.seed) * 0.04;
     const cos = Math.cos(rot);
     const sin = Math.sin(rot);
 
-    const points = burst.kind === 'thumb' ? thumbPoints : heartPoints;
-    // 心形来自数学坐标（y 朝上），canvas 的 y 朝下，要翻一下；大拇指的剪影本来就是屏幕坐标
-    const ySign = burst.kind === 'thumb' ? 1 : -1;
+    const points = burst.kind === 'thumb' ? thumbPoints : lovePoints;
 
     // 核心柔光：几颗大号软点，不画实心贴图也能有体积
     const coreCount = 5;
@@ -328,7 +256,7 @@ export function createGestureFx() {
       const a = (i / coreCount) * TAU + time * 0.2;
       const r = scale * 0.16 * (i % 2 === 0 ? 1 : -0.6);
       const coreSize = scale * rand(0.7, 1.1);
-      ctx.globalAlpha = envelope * 0.24;
+      ctx.globalAlpha = envelope * 0.16;
       ctx.drawImage(
         dots[burst.kind === 'thumb' ? 'amber' : 'rose'],
         burst.x + Math.cos(a) * r - coreSize / 2,
@@ -347,12 +275,12 @@ export function createGestureFx() {
 
       const swirl = Math.sin(time * 2.2 + pt.phase) * 0.012;
       const rx = bx * cos - by * sin + swirl;
-      const ry = (bx * sin + by * cos) * ySign;
+      const ry = bx * sin + by * cos;
 
       // 散开：沿径向飞出去
       const spread = scatter * (0.5 + pt.seed) * 70;
       const px = burst.x + rx * scale + pt.dx * spread;
-      const py = burst.y + ry * scale - rise + pt.dy * ySign * spread + scatter * scatter * 50;
+      const py = burst.y + ry * scale - rise + pt.dy * spread + scatter * scatter * 50;
 
       const twinkle = 0.6 + 0.4 * Math.sin(time * 7 + pt.phase * 1.7);
       const size = pt.size * pt.depth * (0.55 + 0.45 * settle) * twinkle;
@@ -463,14 +391,18 @@ export function createGestureFx() {
         pointer = null;
         return;
       }
-      pointer = { x: state.x, y: state.y, progress: state.progress || 0, kind: state.kind || 'heart' };
+      pointer = { x: state.x, y: state.y, progress: state.progress || 0, kind: state.kind || 'love' };
     },
     burst(kind, x, y) {
       if (kind === 'thumb' && !thumbPoints) {
-        thumbPoints = buildThumbPoints(isSmallScreen() ? 420 : 760);
+        thumbPoints = buildGlyphPoints(isSmallScreen() ? 420 : 760, GLYPH.thumb);
+      }
+      if (kind === 'love' && !lovePoints) {
+        lovePoints = buildGlyphPoints(isSmallScreen() ? 760 : 1400, GLYPH.love);
       }
       const k = baseScale / 110;
-      const sparkCount = kind === 'pulse' ? 26 : kind === 'thumb' ? 70 : 110;
+      // 星火别太密：手势剪影本来就靠点云认形状，星火一多就看不清手型了
+      const sparkCount = kind === 'pulse' ? 26 : kind === 'thumb' ? 70 : 80;
       bursts.push({
         kind,
         x,
@@ -523,7 +455,7 @@ export function createGestureFx() {
       };
       return {
         baseScale,
-        heart: bounds(heartPoints),
+        love: lovePoints ? bounds(lovePoints) : null,
         thumb: thumbPoints ? bounds(thumbPoints) : null,
         lastDraw,
         bursts: bursts.map((b) => ({ kind: b.kind, age: +b.age.toFixed(2) })),

@@ -1,12 +1,12 @@
 /**
- * 摄像头手势：比心 / 竖大拇指 / 握拳→张开。
+ * 摄像头手势：🤟 我爱你 / 竖大拇指 / 握拳→张开。
  *
  * 三类手势分两套逻辑：
- *  - 比心、大拇指：姿势保持 HOLD_MS 就触发，属于"摆出来就出"
+ *  - 我爱你、大拇指：姿势保持 HOLD_MS 就触发，属于"摆出来就出"
  *  - 握拳→张开：序列手势，要先把拳头稳住 PALM_HOLD_MS，再张开才算完成，
  *    这样单纯挥手、打字、张开手掌都不会误触
  *  - 组合技：握拳 → 张开 → 再握拳，全程只有"拳"和"掌"两种状态。
- *    试过用捏合收尾，但捏合和比心的手型几乎重合，真机上分不开，弃用
+ *    收尾原本是"拇指食指捏合"，但那个手型和比心几乎重合，真机上分不开，弃用
  *
  * 设计约束：
  *  - 模型与 wasm 全部 vendor 在 vendor/mediapipe/，点按钮时才动态 import，
@@ -33,10 +33,15 @@ const MIN_STREAK = 2; // 至少连续几帧判定成功
 const RELEASE_STREAK = 2; // 连续几帧没姿势才重新上膛
 const PALM_HOLD_MS = 180; // 握拳要稳住这么久，张开才算数（太短会误触）
 const FIST_TIMEOUT = 3000; // 握拳之后多久还没张开就作废
-const COMBO_GRACE = 900; // 组合技触发后这段时间里屏蔽比心，免得同一下炸两颗心
-// 组合技第二步（再握一拳）要求的连续帧数。张开→握合中间会短暂经过半握，
-// 用 MIN_STREAK 那 2 帧会被过渡帧误判成"第二拳"
-const FIST_FIRE_STREAK = 4;
+const COMBO_GRACE = 900; // 组合技触发后这段时间里屏蔽 🤟，免得同一下炸两次
+// 组合技第二步（再握一拳）：用"时间窗口内攒够几帧"而不是"连续几帧"。
+// 要求连续会被识别抖动打死——只要中间有一帧不成立，计数就归零，永远攒不满
+const FIST_FIRE_HITS = 3;
+const FIST_FIRE_WINDOW = 320;
+// 多久"既不是拳也不是掌"才算真的把手放下了。
+// 原来按帧数算（10 帧），可是张开→握拳本来就要经过半开状态，
+// 30fps 下 10 帧只有 333ms，60fps 下只有 167ms——正常人的握拳速度直接被判成"走开了"
+const NEUTRAL_GIVEUP_MS = 1500;
 
 // 送进模型前先缩到这个宽度：640×480 直接喂太浪费。
 // 256 更省算力，但真机上小图更容易丢手，先用回 320 这个验证过的值。
@@ -55,16 +60,18 @@ const ROI = {
 
 /**
  * 判定阈值都放这里，真机手感不对就调这几个数。
- * 比心：拇指食指指尖靠近、两指都伸出来、其余三指收住
+ * 我爱你 🤟：拇指、食指、小指伸开，中指和无名指收起来
  * 大拇指：四指全收、拇指明显伸出来且朝上
  * 握拳：四指全收、拇指也收起来（跟竖大拇指区分开）
  * 张开：四指全伸、大拇指也张开
  */
 export const THRESHOLD = {
-  heartTipGap: 0.85,
-  heartThumbOut: 0.32,
-  heartIndexOut: 0.5,
-  heartCurled: 1.12,
+  // 🤟：拇指、食指、小指伸开，中指和无名指收起来。
+  // 全部是"伸 / 收"的二值信号，不涉及"两个指尖要碰到一起"这种连续量，
+  // 所以能和握拳、张开、竖大拇指干净地区分开
+  loveThumbOut: 0.4,
+  loveExtend: 1.05,
+  loveCurl: 1.0,
   thumbOut: 0.5,
   thumbRise: 0.12,
   thumbCurled: 1.0,
@@ -99,24 +106,29 @@ function handScale(lm) {
   return dist(lm[0], lm[9]) || 1e-6;
 }
 
-/** 比心：拇指与食指指尖靠近，其余三指收拢 */
-export function analyzeHeart(lm) {
-  if (!lm || lm.length < 21) return { isHeart: false };
+/**
+ * 🤟 我爱你：拇指、食指、小指伸开，中指和无名指收起来。
+ *
+ * 早先这里是"比心"（拇指和食指指尖碰在一起），但那个手型和捏合几乎重合、
+ * 指尖又抖，真机上一直不稳。换成 🤟 之后四个判断维度全是"伸还是收"，
+ * 和握拳（四指全收）、张开（四指全伸）、竖大拇指（四指全收 + 拇指朝上）
+ * 两两互斥。
+ */
+export function analyzeLove(lm) {
+  if (!lm || lm.length < 21) return { isLove: false };
 
   const scale = handScale(lm);
-  const tipGap = dist(lm[4], lm[8]) / scale;
-  const thumbOut = dist(lm[4], lm[2]) / scale;
-  const indexOut = dist(lm[8], lm[5]) / scale;
-  const curled =
-    (curlRatio(lm, 12, 10) + curlRatio(lm, 16, 14) + curlRatio(lm, 20, 18)) / 3;
+  const curls = fingerCurls(lm); // 食指 / 中指 / 无名指 / 小指
+  const thumbOut = thumbSpread(lm, scale);
+  const extend = Math.min(curls[0], curls[3]); // 食指和小指都要伸
+  const curl = Math.max(curls[1], curls[2]); // 中指和无名指都要收
 
-  const isHeart =
-    tipGap < THRESHOLD.heartTipGap &&
-    thumbOut > THRESHOLD.heartThumbOut &&
-    indexOut > THRESHOLD.heartIndexOut &&
-    curled < THRESHOLD.heartCurled;
+  const isLove =
+    thumbOut > THRESHOLD.loveThumbOut &&
+    extend > THRESHOLD.loveExtend &&
+    curl < THRESHOLD.loveCurl;
 
-  return { isHeart, tipGap, thumbOut, indexOut, curled };
+  return { isLove, thumbOut, extend, curl };
 }
 
 /** 竖大拇指：四指全收、拇指伸出来且朝上 */
@@ -236,8 +248,8 @@ export function nextRoi(bounds, current) {
 }
 
 /**
- * 捏合：拇指指尖和食指指尖碰在一起，其余三指不蜷（这就是和比心的区别）。
- * 比心要求中指 / 无名指 / 小指收起来，捏合时它们是伸开的。
+ * 捏合：拇指指尖和食指指尖碰在一起，其余三指不蜷。
+ * 组合技已经不用它了（换成"再握一拳"），留着只是方便以后做别的手势。
  */
 export function analyzePinch(lm) {
   if (!lm || lm.length < 21) return { isPinch: false };
@@ -283,7 +295,7 @@ function errorCode(error) {
 
 export function createHandTracker({
   video,
-  onHeart,
+  onLove,
   onThumb,
   onPalm,
   onCombo,
@@ -312,7 +324,7 @@ export function createHandTracker({
   let inferMs = 0;
   let inferAvg = 0;
 
-  // 手势状态机（比心 / 大拇指：保持触发）
+  // 手势状态机（🤟 / 大拇指：保持触发）
   let currentKind = null;
   let since = 0;
   let streak = 0;
@@ -323,7 +335,8 @@ export function createHandTracker({
   // 序列状态机（握拳 → 张开 → 再握拳）
   let fistStreak = 0;
   let openStreak = 0;
-  let neutralStreak = 0;
+  let fistHits = []; // 最近几次判定为拳的时间戳（窗口内）
+  let neutralSince = 0; // 这一轮"既不是拳也不是掌"是从什么时候开始的
   let palmStage = 'idle'; // idle | fist | mixed
   let palmSince = 0;
   let lastPalmFire = -Infinity;
@@ -521,25 +534,31 @@ export function createHandTracker({
   function resetPalm() {
     fistStreak = 0;
     openStreak = 0;
-    neutralStreak = 0;
+    fistHits = [];
+    neutralSince = 0;
     palmStage = 'idle';
   }
 
   /**
    * 组合技序列：握拳 → 张开（炸开）→ 再握拳（成字）。
    *
-   * 三个真机上踩到的坑：
+   * 四个真机上踩到的坑：
    *  - 握拳到张开之间会经过几帧"既不是拳也不是完全张开"，不能因为这几帧就作废，
    *    改成给整段一个超时（FIST_TIMEOUT），中间怎么动都行
    *  - 起手只在 idle 时收拳。mixed 阶段里如果也走起手分支，第二拳会被当成
    *    "重新开始一轮"直接吞掉，永远等不到聚字
-   *  - 第二拳要求连续 FIST_FIRE_STREAK 帧，2 帧会被张开→握合的过渡帧骗到
+   *  - "手放下了"必须按时间算：张开→握拳本来就要经过半开状态，按帧数算会把
+   *    正常速度的握拳判成走开，整段作废（这是"第二拳时灵时不灵"的主因）
+   *  - 第二拳用窗口计数，要求连续帧太脆，抖一帧就归零
    * @returns {'open'|'combo'|null} 这一帧完成的那一步
    */
   function updatePalm(now, fist, open) {
     fistStreak = fist.isFist ? fistStreak + 1 : 0;
     openStreak = open.isOpen ? openStreak + 1 : 0;
-    neutralStreak = !fist.isFist && !open.isOpen ? neutralStreak + 1 : 0;
+    neutralSince = !fist.isFist && !open.isOpen ? neutralSince || now : 0;
+
+    if (fist.isFist) fistHits.push(now);
+    while (fistHits.length && now - fistHits[0] > FIST_FIRE_WINDOW) fistHits.shift();
 
     // 起手：只在完全空闲时收第一拳
     if (palmStage === 'idle' && fistStreak >= MIN_STREAK) {
@@ -563,17 +582,18 @@ export function createHandTracker({
       lastPalmLatency = Math.round(now - palmSince);
       palmStage = 'mixed';
       palmSince = now;
+      fistHits = []; // 第一拳的判定不能算进第二拳
       return 'open';
     }
 
     if (palmStage === 'mixed') {
-      // 手彻底放下（连续好几帧什么姿势都不是）才算走开
-      if (neutralStreak >= 10) {
+      // 手彻底放下（1.5 秒什么姿势都不是）才算走开；中间的半开状态不算
+      if (neutralSince && now - neutralSince > NEUTRAL_GIVEUP_MS) {
         palmStage = 'idle';
         return null;
       }
       if (now - palmSince < PALM_HOLD_MS) return null;
-      if (fistStreak >= FIST_FIRE_STREAK) {
+      if (fistHits.length >= FIST_FIRE_HITS) {
         lastComboAt = now;
         palmStage = 'idle';
         return 'combo';
@@ -595,12 +615,12 @@ export function createHandTracker({
       return;
     }
 
-    const heart = analyzeHeart(lm);
+    const love = analyzeLove(lm);
     const thumb = analyzeThumbUp(lm);
     const fist = analyzeFist(lm);
     const open = analyzeOpenPalm(lm);
     const pinch = analyzePinch(lm);
-    lastMetrics = { heart, thumb, fist, open, pinch };
+    lastMetrics = { love, thumb, fist, open, pinch };
 
     const pos = palmScreen(lm);
 
@@ -608,7 +628,7 @@ export function createHandTracker({
     // 之后再判断就会把这一帧当成"不在组合技里"，于是捏合同时炸出一颗心
     const wasInCombo = palmStage === 'mixed';
 
-    // 序列手势独立于下面比心 / 大拇指的"保持触发"
+    // 序列手势独立于下面 🤟 / 大拇指的"保持触发"
     const comboStep = updatePalm(now, fist, open);
     if (comboStep === 'open') {
       onPalm?.({ ...pos, latency: lastPalmLatency });
@@ -616,10 +636,10 @@ export function createHandTracker({
       onCombo?.({ ...pos });
     }
 
-    // 组合技期间、以及刚触发完的 0.9 秒内，都不判比心 / 大拇指
+    // 组合技期间、以及刚触发完的 0.9 秒内，都不判 🤟 / 大拇指
     const suppress = wasInCombo || now - lastComboAt < COMBO_GRACE;
     let kind = null;
-    if (!suppress && heart.isHeart) kind = 'heart';
+    if (!suppress && love.isLove) kind = 'love';
     else if (!suppress && thumb.isThumbUp) kind = 'thumb';
     else if (fist.isFist) kind = 'fist';
     else if (open.isOpen) kind = 'open';
@@ -657,7 +677,7 @@ export function createHandTracker({
       y: pos.y,
       kind,
       progress: displayProgress,
-      metrics: { heart, thumb, fist, open },
+      metrics: { love, thumb, fist, open },
     });
 
     if (palmKind) return;
@@ -667,7 +687,7 @@ export function createHandTracker({
       lastFire = now;
       // 从"姿势刚满足条件"到真正触发之间的耗时，用来验收响应速度
       lastLatency = Math.round(now - since);
-      if (kind === 'heart') onHeart?.({ ...pos, metrics: heart, latency: lastLatency });
+      if (kind === 'love') onLove?.({ ...pos, metrics: love, latency: lastLatency });
       else onThumb?.({ ...pos, metrics: thumb, latency: lastLatency });
     }
   }
@@ -794,7 +814,7 @@ export function createHandTracker({
       }
       return prewarming;
     },
-    analyze: analyzeHeart,
+    analyze: analyzeLove,
     analyzeThumb: analyzeThumbUp,
     analyzeFist,
     analyzeOpen: analyzeOpenPalm,

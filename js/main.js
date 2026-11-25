@@ -143,7 +143,7 @@ scene.add(snow.points);
 
 const bursts = createBurstSystem(scene);
 
-// 屏幕空间的手势反馈：准星、蓄力环、比心 / 大拇指特效
+// 屏幕空间的手势反馈：准星、蓄力环、🤟 / 大拇指特效
 const gestureFx = createGestureFx();
 
 const photoOrnaments = createPhotoOrnaments(world, {
@@ -626,7 +626,7 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeViewer();
 });
 
-/* ---------------- 摄像头手势：比心 ---------------- */
+/* ---------------- 摄像头手势：🤟 我爱你 ---------------- */
 
 const gestureVideo = document.getElementById('gesture-video');
 const gestureToggle = document.getElementById('gesture-toggle');
@@ -680,7 +680,7 @@ const handTracker = createHandTracker({
     gestureDebugEl.hidden = false;
     gestureDebugEl.textContent = m
       ? `手势 ${state.kind || '-'} ${Math.round((state.progress || 0) * 100)}% | ` +
-        `心 gap ${m.heart.tipGap?.toFixed(2)} curl ${m.heart.curled?.toFixed(2)} | ` +
+        `🤟 伸 ${m.love.extend?.toFixed(2)} 收 ${m.love.curl?.toFixed(2)} 拇 ${m.love.thumbOut?.toFixed(2)} | ` +
         `拇指 out ${m.thumb.thumbOut?.toFixed(2)} rise ${m.thumb.rise?.toFixed(2)} | ` +
         `拳 ${m.fist.maxCurl?.toFixed(2)}/${m.fist.thumbTuck?.toFixed(2)} ` +
         `开 ${m.open.minCurl?.toFixed(2)}/${m.open.thumbOut?.toFixed(2)} | ` +
@@ -688,7 +688,7 @@ const handTracker = createHandTracker({
         `延迟 ${handTracker.latency ?? '-'}ms`
       : '手势 -';
   },
-  onHeart: ({ x, y }) => gestureFx.burst('heart', x, y),
+  onLove: ({ x, y }) => gestureFx.burst('love', x, y),
   onThumb: ({ x, y }) => gestureFx.burst('thumb', x, y),
   onPalm: () => openCompose(),
   onCombo: () => composeToText(),
@@ -712,7 +712,7 @@ const handTracker = createHandTracker({
         // 隐私模式存不了，最多下次多等一会儿
       }
       // 拳头比张开的手难检测，先张手让模型锁定，再握起来跟踪才稳
-      showToast('先张手让摄像头看到你，再比心 / 握拳；组合技：握拳 → 张开 → 再握拳');
+      showToast('先张手让摄像头看到你，再比「我爱你」/ 握拳；组合技：握拳 → 张开 → 再握拳');
     } else if (gestureMessages[status]) {
       showToast(gestureMessages[status]);
     }
