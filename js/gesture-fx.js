@@ -2,8 +2,9 @@
  * 手势反馈特效层（Canvas 2D，贴在主画布上）。
  *
  * 全部用粒子拼，不用整块贴图：
- *  - 🤟 我爱你：把 🤟 的剪影采样成点云，从外围飞入、呼吸、再炸开
  *  - 竖大拇指：把 👍 的剪影采样成点云，同样用光点拼出来（不画 emoji）
+ *  - 🤟 的反馈不在这里：那是场景里的 3D 粒子爱心（见 js/heart3d.js），
+ *    这一层只负责准星和蓄力环
  *  - 冲击波也是点组成的环，不是实线圆
  *  - 再加一层飞散星火，带拖尾
  *
@@ -11,7 +12,7 @@
  */
 
 const TAU = Math.PI * 2;
-const LIFE = { love: 2.0, thumb: 1.9, pulse: 1.0 };
+const LIFE = { thumb: 1.9, pulse: 1.0 };
 
 const isSmallScreen = () => Math.min(window.innerWidth, window.innerHeight) < 620;
 
@@ -29,16 +30,6 @@ const GLYPH = {
     innerSize: [2.6, 5],
     edge: ['white', 'gold', 'gold', 'amber'],
     inner: ['gold', 'amber'],
-  },
-  // 手的剪影如果实心填充，缩到 150px 就糊成一团了，
-  // 所以 🤟 几乎只取轮廓：更像线稿，手型才认得出来
-  love: {
-    char: '🤟',
-    rimShare: 0.86,
-    rimSize: [4.2, 7.2],
-    innerSize: [2.4, 4.4],
-    edge: ['white', 'rose', 'rose', 'pink'],
-    inner: ['rose', 'pink', 'gold'],
   },
 };
 
@@ -155,8 +146,7 @@ export function createGestureFx() {
     white: makeDotSprite('255, 238, 246'),
   };
 
-  let lovePoints = null; // 第一次用到再采样，省启动开销
-  let thumbPoints = null;
+  let thumbPoints = null; // 第一次用到再采样，省启动开销
 
   const canvas = document.createElement('canvas');
   canvas.className = 'fx-layer';
@@ -248,7 +238,7 @@ export function createGestureFx() {
     const cos = Math.cos(rot);
     const sin = Math.sin(rot);
 
-    const points = burst.kind === 'thumb' ? thumbPoints : lovePoints;
+    const points = thumbPoints;
 
     // 核心柔光：几颗大号软点，不画实心贴图也能有体积
     const coreCount = 5;
@@ -397,9 +387,6 @@ export function createGestureFx() {
       if (kind === 'thumb' && !thumbPoints) {
         thumbPoints = buildGlyphPoints(isSmallScreen() ? 420 : 760, GLYPH.thumb);
       }
-      if (kind === 'love' && !lovePoints) {
-        lovePoints = buildGlyphPoints(isSmallScreen() ? 760 : 1400, GLYPH.love);
-      }
       const k = baseScale / 110;
       // 星火别太密：手势剪影本来就靠点云认形状，星火一多就看不清手型了
       const sparkCount = kind === 'pulse' ? 26 : kind === 'thumb' ? 70 : 80;
@@ -455,7 +442,6 @@ export function createGestureFx() {
       };
       return {
         baseScale,
-        love: lovePoints ? bounds(lovePoints) : null,
         thumb: thumbPoints ? bounds(thumbPoints) : null,
         lastDraw,
         bursts: bursts.map((b) => ({ kind: b.kind, age: +b.age.toFixed(2) })),

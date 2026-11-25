@@ -88,8 +88,8 @@ export function createTree(count) {
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mv;
 
-        // 生长：按高度由下至上逐点点亮
-        float reveal = smoothstep(0.0, 0.1, uProgress * 1.12 - aHeight);
+        // 生长：星星先亮，光从上往下流（用 1.0 - aHeight 把顺序翻过来）
+        float reveal = smoothstep(0.0, 0.1, uProgress * 1.12 - (1.0 - aHeight));
 
         float twinkle = 0.5 + 0.5 * sin(uTime * (0.7 + aPhase * 0.9) + aPhase * 5.0);
         float brightness = 0.5 + 0.5 * twinkle;
@@ -101,7 +101,7 @@ export function createTree(count) {
         col = mix(col, uWarm, aTint * 0.85);
 
         vColor = col;
-        vAlpha = reveal * (0.085 + 0.26 * brightness);
+        vAlpha = reveal * (0.11 + 0.33 * brightness);
       }
     `,
     fragmentShader: /* glsl */ `
@@ -175,12 +175,12 @@ export function createTree(count) {
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * mv;
 
-        float reveal = smoothstep(0.0, 0.08, uProgress * 1.08 - aHeight);
+        float reveal = smoothstep(0.0, 0.08, uProgress * 1.08 - (1.0 - aHeight));
         // 亮波沿螺旋向下跑
         float wave = 0.22 + 0.78 * pow(0.5 + 0.5 * sin(aHeight * 46.0 - uTime * 2.8 + aPhase * 0.4), 4.0);
 
         gl_PointSize = aSize * uPixelRatio * (30.0 / max(0.6, -mv.z)) * (0.8 + wave * 0.5);
-        vAlpha = reveal * wave * 0.62;
+        vAlpha = reveal * wave * 0.72;
       }
     `,
     fragmentShader: /* glsl */ `

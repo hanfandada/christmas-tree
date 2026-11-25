@@ -49,9 +49,9 @@ export const CAMERA = {
 
 /** 开场生长动画的节奏（秒） */
 export const TIMELINE = {
-  growDelay: 0.35,
-  growDuration: 1.9,
-  stringDelay: 1.1,
-  starDelay: 1.9,
-  hudDelay: 2.2,
+  growDelay: 0.45,
+  growDuration: 3.6, // 1.9 太快，差不多是"一眨眼就亮完了"，拉到 3.6 才有"慢慢亮起来"的感觉
+  stringDelay: 2.2, // 等光流到树腰再让灯串醒过来
+  starDelay: 0.15, // 星星先亮，光是它撒下来的
+  hudDelay: 4.3,
 };

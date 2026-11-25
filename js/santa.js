@@ -543,10 +543,12 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
         delay: 0.06 + i * 0.022, // 跟在雪橇后面多远
         detach: 0.58 + i * 0.05, // 开始往树上送的时刻
         phase: Math.random() * Math.PI * 2,
-        tilt: rand(-0.12, 0.12),
-        // 上下错开成一串，不然几张照片会在同一位置叠成一坨
-        lane: (i % 2 === 0 ? 1 : -1) * (0.34 + Math.floor(i / 2) * 0.26) * laneScale,
-        size: (1.15 - i * 0.02) * sizeScale,
+        // 只用一点点固定倾斜，不要每张随机——随机倾斜是"乱"的主要来源
+        tilt: (i % 2 === 0 ? 1 : -1) * 0.045,
+        // 一条竖向的流：左右只小幅交替，主要靠向下位移把照片排开
+        lane: (i % 2 === 0 ? 0.08 : -0.08) * laneScale - i * 0.11,
+        // 尺寸统一，之前越往后越小反而显得散
+        size: sizeScale,
         sprite,
         material,
         glow,
@@ -579,8 +581,9 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       sampleAt(clamp01(p - item.delay), cursor);
 
       if (p < item.detach || !item.target) {
-        const sway = Math.sin(time * 2.1 + item.phase) * 0.3;
-        const bob = Math.cos(time * 2.7 + item.phase * 1.7) * 0.2;
+        // 摇摆收小：拖尾要"被雪橇牵着走"，不是各飘各的
+        const sway = Math.sin(time * 2.1 + item.phase) * 0.08;
+        const bob = Math.cos(time * 2.7 + item.phase * 1.7) * 0.06;
         item.sprite.position.set(
           cursor.x + sway,
           cursor.y + bob + item.lane,
@@ -592,7 +595,7 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
           Math.max(0.001, item.size * shrink),
           1
         );
-        item.material.rotation = item.tilt + Math.sin(time * 1.6 + item.phase) * 0.14;
+        item.material.rotation = item.tilt + Math.sin(time * 1.2 + item.phase) * 0.03;
         item.material.opacity = clamp01((p - item.release) / 0.05) * (shrink > 0.02 ? 1 : 0);
       } else {
         // 送到树上：从脱离点拱一道弧线飞到对应礼物的位置，一边缩小淡出

@@ -20,6 +20,7 @@ import { createHandTracker } from './hand.js';
 import { createGestureFx } from './gesture-fx.js';
 import { createSanta } from './santa.js';
 import { createCompose } from './compose.js';
+import { createHeart3D } from './heart3d.js';
 import { createMusic, renderPreview } from './audio.js';
 import {
   blobToAverageColor,
@@ -70,7 +71,7 @@ let pixelRatio = Math.min(window.devicePixelRatio || 1, quality.pixelRatio);
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.95;
+renderer.toneMappingExposure = 1.02; // 稍微提一点整体亮度，树才不会糊成一片黑
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(
@@ -161,6 +162,13 @@ const santa = createSanta({
 });
 world.add(santa.group);
 
+// 🤟：树上的粒子飞出来聚成一颗会自转的立体爱心
+const heart3d = createHeart3D({
+  count: Math.round(quality.tree * 0.1),
+  reducedMotion,
+});
+world.add(heart3d.group);
+
 // 组合技：整棵树的粒子炸开 → 收拢成 "Merry Christmas"
 const compose = createCompose({
   count: Math.round(quality.tree * 0.26),
@@ -177,6 +185,7 @@ const sceneObjects = [
   photoOrnaments.group,
   ground.group,
 ];
+// 爱心不放进上面这个列表：它自己会收 visible，被一起置 true 会留下一层残影
 let sceneHidden = false;
 
 /* 像素比同步给所有着色器 */
@@ -188,6 +197,7 @@ bursts.setPixelRatio(pixelRatio);
 photoOrnaments.setPixelRatio(pixelRatio);
 santa.setPixelRatio(pixelRatio);
 compose.setPixelRatio(pixelRatio);
+heart3d.setPixelRatio(pixelRatio);
 
 
 /* ---------------- 文案：支持 ?to=名字 定制 ---------------- */
@@ -551,7 +561,7 @@ async function openCompose() {
 
     clearTimeout(comboTimer);
     comboTimer = window.setTimeout(() => endCompose(), COMBO_WINDOW);
-    showToast('捏一下手指，把它们拼成 Merry Christmas');
+    showToast('再握一拳，把它们拼成 Merry Christmas');
     return true;
   } finally {
     composeBusy = false;
@@ -688,7 +698,11 @@ const handTracker = createHandTracker({
         `延迟 ${handTracker.latency ?? '-'}ms`
       : '手势 -';
   },
-  onLove: ({ x, y }) => gestureFx.burst('love', x, y),
+  // 🤟：粒子从树里飞出来聚成 3D 爱心（拼字进行中就不抢戏了）
+  onLove: () => {
+    if (compose.active) return;
+    heart3d.play({ treePositions: tree.getPositions(), time: elapsed });
+  },
   onThumb: ({ x, y }) => gestureFx.burst('thumb', x, y),
   onPalm: () => openCompose(),
   onCombo: () => composeToText(),
@@ -806,6 +820,7 @@ if (query.get('debug') === '1') {
     music,
     musicPreview: renderPreview,
     compose,
+    heart3d,
     openCompose,
     composeToText,
     endCompose,
@@ -854,7 +869,6 @@ let firstFrame = true;
 let snowBoost = 0;
 
 const clamp01 = (v) => Math.min(Math.max(v, 0), 1);
-const easeOutCubic = (x) => 1 - Math.pow(1 - x, 3);
 
 /* ---------------- 帧率监测与自动降级 ---------------- */
 
@@ -879,6 +893,7 @@ function degrade() {
   photoOrnaments.setPixelRatio(pixelRatio);
   santa.setPixelRatio(pixelRatio);
   compose.setPixelRatio(pixelRatio);
+  heart3d.setPixelRatio(pixelRatio);
 }
 
 function fallback(message) {
@@ -906,7 +921,8 @@ function animate() {
   const growRaw = reducedMotion
     ? 1
     : clamp01((elapsed - TIMELINE.growDelay) / TIMELINE.growDuration);
-  tree.setProgress(easeOutCubic(growRaw));
+  // 用线性推进：easeOut 会把前 1/3 的时间冲掉，看上去还是"一下就亮完了"
+  tree.setProgress(growRaw);
 
   const ornamentReveal = reducedMotion
     ? 1
@@ -924,12 +940,14 @@ function animate() {
   photoOrnaments.update(elapsed, dt, camera.position);
   santa.update(elapsed, dt);
   compose.update(elapsed, dt, camera);
+  heart3d.update(elapsed, dt, camera);
   gestureFx.update(elapsed, dt);
 
   // 粒子云一旦接管画面，就把真实场景收起来（不然会和云叠在一起）
   if (compose.covered !== sceneHidden) {
     sceneHidden = compose.covered;
     for (const object of sceneObjects) object.visible = !sceneHidden;
+    heart3d.group.visible = !sceneHidden && heart3d.active;
     // 粒子拼字的时候，把底下那行 DOM 文案收起来，免得同一句话出现两次
     document.body.classList.toggle('is-composing', sceneHidden);
   }

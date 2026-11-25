@@ -22,6 +22,10 @@ const RATE_FAST = 1.6; // 减少动效时用的倍率
 
 const PHOTO_BUDGET = 12000; // 照片粒子总上限
 
+// 成字阶段整体压暗一档：上万颗亮点挤在笔画里，全亮会被泛光抓成一片白，
+// 笔画的边缘反而糊掉，看起来"太亮"而不是"很亮"
+const TEXT_TONE = 0.72;
+
 const WARM_A = new THREE.Color(0xffd9a0);
 const WARM_B = new THREE.Color(0xffb968);
 const GREEN_A = new THREE.Color(PALETTE.treeMid);
@@ -183,10 +187,12 @@ const VERTEX = /* glsl */ `
     gl_Position = projectionMatrix * mv;
 
     float twinkle = 0.7 + 0.3 * sin(uTime * 2.4 + aPhase * 9.0);
-    gl_PointSize = aSize * uPixelRatio * (34.0 / max(1.0, -mv.z)) * (1.0 + chaos * 0.3 + local * 0.22) * twinkle;
+    gl_PointSize = aSize * uPixelRatio * (34.0 / max(1.0, -mv.z)) * (1.0 + chaos * 0.3 + local * 0.1) * twinkle;
 
     vColor = mix(aColor, aTextColor, local);
-    vAlpha = uOpacity;
+    // 成字阶段压一档：上万颗加色点叠在笔画上，单个点再亮就糊成一片白，
+    // 反而看不清字形。云阶段保持原亮度，只压落位之后的部分
+    vAlpha = uOpacity * mix(1.0, 0.6, local);
   }
 `;
 
@@ -200,8 +206,8 @@ const FRAGMENT = /* glsl */ `
     float falloff = smoothstep(0.5, 0.04, d);
     float alpha = falloff * vAlpha;
     if (alpha < 0.006) discard;
-    // 成字阶段再亮一点，笔画才立得住
-    gl_FragColor = vec4(vColor * (1.15 + smoothstep(0.55, 1.0, uProgress) * 0.4), alpha);
+    // 成字阶段只提一点点，提多了就是过曝
+    gl_FragColor = vec4(vColor * (1.05 + smoothstep(0.55, 1.0, uProgress) * 0.16), alpha);
   }
 `;
 
@@ -352,9 +358,9 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
         colors[i * 3 + 1] = green.g;
         colors[i * 3 + 2] = green.b;
       }
-      textColors[i * 3] = warm.r;
-      textColors[i * 3 + 1] = warm.g;
-      textColors[i * 3 + 2] = warm.b;
+      textColors[i * 3] = warm.r * TEXT_TONE;
+      textColors[i * 3 + 1] = warm.g * TEXT_TONE;
+      textColors[i * 3 + 2] = warm.b * TEXT_TONE;
 
       delays[i] = Math.random();
       phases[i] = Math.random();
@@ -389,9 +395,9 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
         colors[slot * 3] = r;
         colors[slot * 3 + 1] = g;
         colors[slot * 3 + 2] = b;
-        textColors[slot * 3] = r;
-        textColors[slot * 3 + 1] = g;
-        textColors[slot * 3 + 2] = b;
+        textColors[slot * 3] = r * TEXT_TONE;
+        textColors[slot * 3 + 1] = g * TEXT_TONE;
+        textColors[slot * 3 + 2] = b * TEXT_TONE;
 
         textPositions[slot * 3] = textInfo.points[sample];
         textPositions[slot * 3 + 1] = textInfo.points[sample + 1];
