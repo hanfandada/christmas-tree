@@ -48,29 +48,44 @@ function makeBuffers() {
     positions: [],
     sizes: [],
     tints: [],
-    // 驯鹿要动起来，所以每个点额外记三件事：
-    //   deerMask 是不是鹿身上的点（跟着一起颠）
-    //   legT     如果长在腿上，从髋部量起的相对位置（0 = 不动）
-    //   hips     那条腿的髋部（顶点着色器里绕它旋转）
+    // 驯鹿的关节骨架。每个点带上"该怎么动"的全部信息，
+    // 顶点着色器就能只靠 uTime 把整只鹿跑起来，CPU 每帧不用碰几何体：
+    //   deerMask 是不是鹿身上的点
+    //   seg      0 = 不隶属任何一条腿，1 = 大腿（髋→膝），2 = 小腿（膝→蹄）
+    //   hips     这条腿的髋（俯仰平面里的 x,y）
+    //   knees    这条腿的膝（小腿绕它弯）
+    //   amp      摆幅。负值表示后腿，膝关节朝反方向折
+    //   phase    这条腿（或这只鹿）的步频相位
+    //   origin   整只鹿的俯仰支点
     deerMask: [],
-    legT: [],
+    seg: [],
     hips: [],
+    knees: [],
+    amp: [],
     phase: [],
+    origin: [],
+    // 亮度系数：暗色的体积点、远侧的腿靠它压下去，
+    // 光靠 tint 只改色相，不改明暗
+    bright: [],
   };
 }
 
-function pushPoint(buf, x, y, z, size, tint) {
+function pushPoint(buf, x, y, z, size, tint, bright = 1) {
   buf.positions.push(x, y, z);
   buf.sizes.push(size);
   buf.tints.push(tint);
   buf.deerMask.push(0);
-  buf.legT.push(0);
+  buf.seg.push(0);
   buf.hips.push(0, 0);
+  buf.knees.push(0, 0);
+  buf.amp.push(0);
   buf.phase.push(0);
+  buf.origin.push(0, 0);
+  buf.bright.push(bright);
 }
 
 /** 一条抖动的线段：线稿的基本单位 */
-function stroke(buf, ax, ay, bx, by, z, count, size, tint) {
+function stroke(buf, ax, ay, bx, by, z, count, size, tint, bright = 1) {
   for (let i = 0; i < count; i++) {
     const t = count === 1 ? 0.5 : i / (count - 1);
     pushPoint(
@@ -79,13 +94,14 @@ function stroke(buf, ax, ay, bx, by, z, count, size, tint) {
       ay + (by - ay) * t + rand(-0.012, 0.012),
       z + rand(-0.018, 0.018),
       size * rand(0.72, 1.3),
-      tint
+      tint,
+      bright
     );
   }
 }
 
 /** 椭圆轮廓：身体、头都用它 */
-function ellipse(buf, cx, cy, rx, ry, z, count, size, tint) {
+function ellipse(buf, cx, cy, rx, ry, z, count, size, tint, bright = 1) {
   for (let i = 0; i < count; i++) {
     const a = (i / count) * Math.PI * 2;
     pushPoint(
@@ -94,7 +110,8 @@ function ellipse(buf, cx, cy, rx, ry, z, count, size, tint) {
       cy + Math.sin(a) * ry,
       z + rand(-0.024, 0.024),
       size * rand(0.72, 1.3),
-      tint
+      tint,
+      bright
     );
   }
 }
@@ -116,9 +133,13 @@ function buildPoints(buf) {
   geometry.setAttribute('aSize', new THREE.Float32BufferAttribute(buf.sizes, 1));
   geometry.setAttribute('aTint', new THREE.Float32BufferAttribute(buf.tints, 1));
   geometry.setAttribute('aDeer', new THREE.Float32BufferAttribute(buf.deerMask, 1));
-  geometry.setAttribute('aLegT', new THREE.Float32BufferAttribute(buf.legT, 1));
+  geometry.setAttribute('aSeg', new THREE.Float32BufferAttribute(buf.seg, 1));
   geometry.setAttribute('aHip', new THREE.Float32BufferAttribute(buf.hips, 2));
+  geometry.setAttribute('aKnee', new THREE.Float32BufferAttribute(buf.knees, 2));
+  geometry.setAttribute('aAmp', new THREE.Float32BufferAttribute(buf.amp, 1));
   geometry.setAttribute('aPhase', new THREE.Float32BufferAttribute(buf.phase, 1));
+  geometry.setAttribute('aOrigin', new THREE.Float32BufferAttribute(buf.origin, 2));
+  geometry.setAttribute('aBright', new THREE.Float32BufferAttribute(buf.bright, 1));
   return geometry;
 }
 
@@ -244,65 +265,139 @@ function addDeer(buf, ox, oy, s, phase = 0) {
   const py = (y) => oy + y * s;
   const deerStart = buf.positions.length / 3;
 
-  /** 画一条腿，并把线段上的点标记成"可以摆动的腿" */
-  function leg(ax, ay, bx, by) {
-    const start = buf.positions.length / 3;
-    stroke(buf, px(ax), py(ay), px(bx), py(by), 0, 10, 1.9, 0.7);
+  /**
+   * 一条两节腿：髋 → 膝 → 蹄。
+   * 大腿上的点标 seg 1（绕髋转），小腿标 seg 2（先绕膝弯、再跟着大腿绕髋转），
+   * 这样才有关节的折叠感，而不是一根棍子在扇形摆动。
+   */
+  function leg(hx, hy, kx, ky, fx, fy, z, amp, ph, bright) {
+    const hip = [px(hx), py(hy)];
+    const knee = [px(kx), py(ky)];
+
+    const begin = buf.positions.length / 3;
+    stroke(buf, hip[0], hip[1], knee[0], knee[1], z, 7, 2.1, 0.66, bright); // 大腿
+    const mid = buf.positions.length / 3;
+    stroke(buf, knee[0], knee[1], px(fx), py(fy), z, 8, 1.7, 0.58, bright); // 小腿
     const end = buf.positions.length / 3;
-    const hx = px(ax);
-    const hy = py(ay);
-    const len = Math.hypot(px(bx) - hx, py(by) - hy) || 1;
-    for (let i = start; i < end; i++) {
-      const dx = buf.positions[i * 3] - hx;
-      const dy = buf.positions[i * 3 + 1] - hy;
-      // 髋部不动、蹄子动得最多
-      buf.legT[i] = Math.min(1, Math.hypot(dx, dy) / len);
-      buf.hips[i * 2] = hx;
-      buf.hips[i * 2 + 1] = hy;
-      buf.phase[i] = phase;
+
+    const tag = (i) => {
+      buf.seg[i] = i < mid ? 1 : 2;
+      buf.hips[i * 2] = hip[0];
+      buf.hips[i * 2 + 1] = hip[1];
+      buf.knees[i * 2] = knee[0];
+      buf.knees[i * 2 + 1] = knee[1];
+      buf.amp[i] = amp;
+      buf.phase[i] = ph;
+    };
+    for (let i = begin; i < end; i++) tag(i);
+
+    // 蹄子：也算小腿的一部分，跟着膝盖一起甩
+    const hoof = buf.positions.length / 3;
+    pushPoint(buf, px(fx), py(fy), z, 2.4, 0.88, bright);
+    tag(hoof);
+    buf.seg[hoof] = 2;
+
+    // 肩/臀的肌肉块，把腿和身子接上，不然侧面看是四根棍子插在球上
+    for (let i = 0; i < 10; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * 0.1;
+      pushPoint(buf, hip[0] + Math.cos(a) * r, hip[1] + Math.sin(a) * r * 1.25, z * 0.75, rand(0.8, 1.5), 0.5, 0.45 * bright);
     }
   }
 
-  // 身体：先填一层暗一点的点，再勾一圈亮轮廓，远处才不是个空圆圈
-  for (let i = 0; i < 46; i++) {
+  // ---- 躯干 ----
+  // 先塞一层暗点当体积。r 偏向外圈，才像个有厚度、边缘结实的身体，
+  // 而不是一团均匀的雾
+  for (let i = 0; i < 120; i++) {
     const a = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.random());
+    const r = Math.pow(Math.random(), 0.6);
     pushPoint(
       buf,
-      px(Math.cos(a) * 0.44 * r),
-      py(Math.sin(a) * 0.26 * r),
-      rand(-0.03, 0.03),
-      rand(0.9, 1.8),
-      0.62
+      px(Math.cos(a) * 0.40 * r),
+      py(Math.sin(a) * 0.20 * r),
+      rand(-0.05, 0.05),
+      rand(0.75, 1.4),
+      0.45,
+      0.55
     );
   }
-  ellipse(buf, px(0), py(0), 0.44 * s, 0.26 * s, 0, 30, 2.0, 0.7);
+  ellipse(buf, px(0), py(0), 0.40 * s, 0.20 * s, 0, 36, 2.2, 0.72); // 亮轮廓
+  // 肩、臀两块鼓包，侧面才有前后之分
+  ellipse(buf, px(0.30), py(-0.02), 0.13 * s, 0.15 * s, 0, 16, 1.7, 0.6, 0.85);
+  ellipse(buf, px(-0.30), py(0.01), 0.15 * s, 0.165 * s, 0, 16, 1.7, 0.6, 0.85);
+  // 脊背一道高光
+  for (let i = 0; i < 15; i++) {
+    const t = i / 14;
+    pushPoint(buf, px(-0.30 + t * 0.6), py(0.183 - Math.abs(t - 0.52) * 0.1), rand(-0.02, 0.02), 1.8, 0.95, 1);
+  }
+  stroke(buf, px(-0.26), py(-0.168), px(0.24), py(-0.16), 0, 12, 1.3, 0.42, 0.55); // 肚皮暗线
 
-  stroke(buf, px(0.3), py(0.14), px(0.5), py(0.44), 0, 10, 1.9, 0.8); // 脖子
-  ellipse(buf, px(0.57), py(0.48), 0.14 * s, 0.09 * s, 0, 16, 1.8, 0.9); // 头
-  stroke(buf, px(0.52), py(0.55), px(0.47), py(0.64), 0, 5, 1.7, 0.8); // 耳朵
+  // ---- 脖子：短而前倾，从肩里长出来，压在躯干上，不能留缝 ----
+  for (let i = 0; i < 8; i++) {
+    const t = i / 7;
+    const x = 0.30 + t * 0.21;
+    const y = 0.0 + t * 0.2;
+    const w = 0.098 * (1 - t) + 0.05 * t;
+    pushPoint(buf, px(x), py(y + w * 0.8), 0, 1.8, 0.72, 0.9);
+    pushPoint(buf, px(x), py(y - w), 0, 1.8, 0.6, 0.68);
+    if (i > 1 && i % 2 === 0) pushPoint(buf, px(x - 0.01), py(y), rand(-0.03, 0.03), 1.3, 0.45, 0.45);
+  }
+  // 喉线，把下颌和胸口连起来
+  stroke(buf, px(0.585), py(0.20), px(0.35), py(-0.06), 0, 8, 1.2, 0.5, 0.55);
 
-  // 鹿角
-  stroke(buf, px(0.58), py(0.55), px(0.64), py(0.76), 0, 8, 1.7, 1);
-  stroke(buf, px(0.64), py(0.76), px(0.78), py(0.82), 0, 6, 1.6, 1);
-  stroke(buf, px(0.62), py(0.67), px(0.74), py(0.7), 0, 6, 1.6, 1);
-  stroke(buf, px(0.55), py(0.58), px(0.44), py(0.78), 0, 7, 1.6, 1);
-  stroke(buf, px(0.48), py(0.71), px(0.39), py(0.74), 0, 4, 1.5, 1);
+  // ---- 头 ----
+  ellipse(buf, px(0.60), py(0.245), 0.105 * s, 0.063 * s, 0, 18, 1.9, 0.88);
+  ellipse(buf, px(0.71), py(0.222), 0.052 * s, 0.033 * s, 0, 10, 1.6, 0.8, 0.9); // 口鼻
+  pushPoint(buf, px(0.755), py(0.222), 0, 1.7, 0.9); // 鼻尖
+  // 耳朵：近侧亮、远侧暗
+  stroke(buf, px(0.555), py(0.30), px(0.482), py(0.375), 0.05, 4, 1.5, 0.85, 0.95);
+  stroke(buf, px(0.585), py(0.295), px(0.52), py(0.365), -0.05, 4, 1.3, 0.5, 0.45);
+  pushPoint(buf, px(0.625), py(0.262), 0.04, 3.2, 1); // 眼睛
 
-  // 腿：前腿和后腿反相摆动，跑起来才有"跑"的样子
-  leg(-0.24, -0.16, -0.31, -0.64);
-  leg(0.18, -0.16, 0.25, -0.64);
-  // 尾巴
-  stroke(buf, px(-0.42), py(0.06), px(-0.55), py(-0.02), 0, 5, 1.6, 0.7);
+  // ---- 鹿角 ----
+  // 主枝从角座往后上方扫，三个叉朝前上方；左右各一根，远侧压暗
+  const antler = (z, bright) => {
+    // 主枝：从角座一路往后上方扫，越长越像鹿角
+    stroke(buf, px(0.555), py(0.30), px(0.487), py(0.45), z, 3, 1.45, 0.94, bright);
+    stroke(buf, px(0.487), py(0.45), px(0.437), py(0.565), z, 3, 1.4, 0.94, bright);
+    stroke(buf, px(0.437), py(0.565), px(0.4), py(0.665), z, 3, 1.35, 0.94, bright);
+    // 眉叉朝前
+    stroke(buf, px(0.532), py(0.36), px(0.628), py(0.402), z, 3, 1.3, 1, bright);
+    // 中叉
+    stroke(buf, px(0.487), py(0.45), px(0.578), py(0.512), z, 3, 1.3, 1, bright);
+    // 后叉
+    stroke(buf, px(0.452), py(0.535), px(0.518), py(0.60), z, 2, 1.25, 1, bright);
+    // 顶端的掌状分叉
+    stroke(buf, px(0.4), py(0.665), px(0.362), py(0.738), z, 2, 1.25, 1, bright);
+    stroke(buf, px(0.4), py(0.665), px(0.442), py(0.728), z, 2, 1.25, 1, bright);
+  };
+  antler(0.05, 1.0);
+  antler(-0.05, 0.5);
 
-  pushPoint(buf, px(0.61), py(0.5), 0, 3.6, 1); // 眼睛
-  pushPoint(buf, px(0.42), py(0.3), 0, 4.0, 1); // 铃铛
+  // ---- 尾巴：驯鹿的尾巴短而翘 ----
+  stroke(buf, px(-0.38), py(0.10), px(-0.455), py(0.155), 0, 4, 1.7, 0.72, 0.9);
+  pushPoint(buf, px(-0.475), py(0.17), 0, 2.5, 0.9);
 
-  // 整只鹿跟着一起上下颠
+  // ---- 四条腿 ----
+  // 横向奔跑的四拍落蹄次序：后近 → 后远 → 前近 → 前远。
+  // amp 的符号决定膝关节往哪边折：前腿收蹄时向后折、后腿的跗关节向前收。
+  leg(-0.27, -0.01, -0.32, -0.23, -0.25, -0.55, 0.13, 0.55, phase + 0.0, 1.0);
+  leg(-0.31, -0.01, -0.36, -0.23, -0.29, -0.55, -0.13, 0.5, phase + 0.45, 0.45);
+  leg(0.26, -0.01, 0.27, -0.25, 0.25, -0.55, 0.13, -0.62, phase + 3.4, 1.0);
+  leg(0.21, -0.01, 0.22, -0.25, 0.2, -0.55, -0.13, -0.56, phase + 3.85, 0.45);
+
+  // 项圈 + 铃铛
+  stroke(buf, px(0.36), py(0.11), px(0.34), py(-0.07), 0.02, 5, 1.6, 0.92, 1);
+  pushPoint(buf, px(0.35), py(-0.1), 0, 3.6, 1);
+
+  // 剩下的点：打上"鹿"的标记，支点定在躯干中心，并继承这只鹿的步频相位。
+  // 腿上的点（seg > 0）保持自己的相位，绝不覆盖——之前前后腿共用相位就是这么来的。
   const end = buf.positions.length / 3;
   for (let i = deerStart; i < end; i++) {
     buf.deerMask[i] = 1;
-    buf.phase[i] = phase;
+    buf.origin[i * 2] = px(0);
+    buf.origin[i * 2 + 1] = py(0);
+    if (buf.seg[i] === 0) buf.phase[i] = phase;
   }
 }
 
@@ -333,15 +428,18 @@ function buildRigGeometry() {
   addSleighBody(buf);
   addSantaFigure(buf);
   // 两只鹿错开相位，不然像一起抽筋
-  addDeer(buf, 2.05, 0.12, 1.0, 0);
-  addDeer(buf, 3.55, 0.06, 0.94, 2.1);
+  const DEER = [
+    { ox: 2.05, oy: 0.12, s: 1.15, phase: 0 },
+    { ox: 3.55, oy: 0.06, s: 1.06, phase: 2.1 },
+  ];
+  for (const d of DEER) addDeer(buf, d.ox, d.oy, d.s, d.phase);
 
-  // 缰绳：从车头拉到驯鹿脖子
-  const deer = [2.05, 3.55];
+  // 缰绳：从车头拉到驯鹿脖子。锚点跟着鹿的缩放走，不然鹿一大就脱开了
+  const neck = (d) => [d.ox + 0.36 * d.s, d.oy + 0.08 * d.s];
   for (const side of [-1, 1]) {
     const z = side * 0.26;
-    stroke(buf, 1.05, 0.16, deer[0] + 0.42, 0.3, z, 14, 1.0, 0.85);
-    stroke(buf, deer[0] - 0.35, 0.14, deer[1] + 0.42, 0.3, z, 18, 1.0, 0.85);
+    stroke(buf, 1.05, 0.16, neck(DEER[0])[0], neck(DEER[0])[1], z, 14, 1.0, 0.85);
+    stroke(buf, DEER[0].ox - 0.42 * DEER[0].s, 0.16, neck(DEER[1])[0], neck(DEER[1])[1], z, 18, 1.0, 0.85);
   }
 
   faceForward(buf);
@@ -372,31 +470,51 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
       attribute float aSize;
       attribute float aTint;
       attribute float aDeer;
-      attribute float aLegT;
+      attribute float aSeg;
       attribute vec2 aHip;
+      attribute vec2 aKnee;
+      attribute float aAmp;
       attribute float aPhase;
+      attribute vec2 aOrigin;
+      attribute float aBright;
 
       varying float vTint;
       varying float vAlpha;
 
+      // 步频：约 1.7 Hz，再慢就像在飘而不是在跑
+      const float GAIT = 10.5;
+
+      vec2 rot(vec2 v, float a) {
+        float c = cos(a);
+        float s = sin(a);
+        return vec2(v.x * c - v.y * s, v.x * s + v.y * c);
+      }
+
       void main() {
         vec3 p = position;
 
-        // 驯鹿跑起来：腿绕髋部摆动。整根雪橇被 faceForward 转过 90°，
-        // 侧影落在 (z, y) 平面上，所以旋转也在这个平面里做
-        const float GAIT = 6.2;
-        if (aLegT > 0.001) {
-          float ang = sin(uTime * GAIT + aPhase) * 0.5 * aLegT;
-          float c = cos(ang);
-          float sn = sin(ang);
-          vec2 d = vec2(p.z - aHip.x, p.y - aHip.y);
-          p.z = aHip.x + d.x * c - d.y * sn;
-          p.y = aHip.y + d.x * sn + d.y * c;
+        // 驯鹿跑起来：四腿两步。整根雪橇被 faceForward 转过 90°，
+        // 侧影落在 (z, y) 平面上，所以关节也在这个平面里转。
+        if (aSeg > 0.5) {
+          float ph = uTime * GAIT + aPhase;
+          float swing = abs(aAmp);
+          float dir = aAmp < 0.0 ? -1.0 : 1.0;
+          float hip = sin(ph) * swing;
+          // 腿抬起来的那半程才弯膝，落地时是直的
+          float bend = max(0.0, sin(ph - 1.0)) * swing * 1.7 * dir;
+
+          vec2 rel = p.zy;
+          if (aSeg > 1.5) rel = aKnee + rot(rel - aKnee, bend); // 小腿先绕膝
+          rel = aHip + rot(rel - aHip, hip);                    // 再一起绕髋
+          p.z = rel.x;
+          p.y = rel.y;
         }
-        // 身子跟着颠一下，幅度很小，但"呆不呆"就差这一点
+        // 整只鹿的二次运动：绕躯干中心俯仰 + 上下颠 + 一点前后涌
         if (aDeer > 0.5) {
-          p.y += sin(uTime * GAIT + aPhase) * 0.05;
-          p.z += cos(uTime * GAIT + aPhase) * 0.02;
+          float ph = uTime * GAIT + aPhase;
+          vec2 rel = rot(p.zy - aOrigin, sin(ph + 0.9) * 0.075);
+          p.z = aOrigin.x + rel.x + sin(ph + 1.4) * 0.022;
+          p.y = aOrigin.y + rel.y + sin(ph + 0.6) * 0.034;
         }
 
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
@@ -406,7 +524,7 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
         gl_PointSize = aSize * uPixelRatio * twinkle * (34.0 / max(1.0, -mv.z));
 
         vTint = aTint;
-        vAlpha = uOpacity;
+        vAlpha = uOpacity * aBright;
       }
     `,
     fragmentShader: /* glsl */ `
