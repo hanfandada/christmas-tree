@@ -71,8 +71,6 @@ function makeBuffers() {
     // 亮度系数：暗色的体积点、远侧的腿靠它压下去，
     // 光靠 tint 只改色相，不改明暗
     bright: [],
-    // 1 = 这一粒属于车里的圣诞老人，着色器会把它绕竖轴转到正对镜头
-    face: [],
   };
 }
 
@@ -89,7 +87,6 @@ function pushPoint(buf, x, y, z, size, tint, bright = 1) {
   buf.origin.push(0, 0);
   buf.normals.push(0, 0, 0);
   buf.bright.push(bright);
-  buf.face.push(0);
 }
 
 /** 一条抖动的线段：线稿的基本单位 */
@@ -149,7 +146,6 @@ function buildPoints(buf) {
   geometry.setAttribute('aOrigin', new THREE.Float32BufferAttribute(buf.origin, 2));
   geometry.setAttribute('aBright', new THREE.Float32BufferAttribute(buf.bright, 1));
   geometry.setAttribute('aNormal', new THREE.Float32BufferAttribute(buf.normals, 3));
-  geometry.setAttribute('aFace', new THREE.Float32BufferAttribute(buf.face, 1));
   return geometry;
 }
 
@@ -433,159 +429,20 @@ function addDeer(buf, ox, oy, s, phase = 0) {
  * 着色器每帧按摄像机方位绕他的竖轴转一下。雪橇转多少他都还是那副样子。
  * ------------------------------------------------------------------ */
 
-/**
- * 画一遍圣诞老人的立绘。
- *
- * 关键是各块**不能重叠**：这个材质是加法混合，也没有深度遮挡，
- * 胡子和头叠在一起就会亮成一块白，大衣和胡子叠在一起会变成橙白，
- * 最后只剩一团光。所以按"纸偶"来画——每一块只画它自己露出来的那部分，
- * 被前面那块盖住的点直接扔掉。
- */
-function santaArt(put) {
-  const RED = 0.04; // 大衣
-  const WHITE = 1; // 毛边、胡子、帽檐
-  const SKIN = 0.86;
-  const DARK = 0;
-
-  const ell = (cx, cy, rx, ry) => (x, y) => ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1;
-  const tri = (a, b, c) => (x, y) => {
-    const d1 = (x - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (y - b[1]);
-    const d2 = (x - c[0]) * (b[1] - c[1]) - (b[0] - c[0]) * (y - c[1]);
-    const d3 = (x - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (y - a[1]);
-    const neg = d1 < 0 || d2 < 0 || d3 < 0;
-    const pos = d1 > 0 || d2 > 0 || d3 > 0;
-    return !(neg && pos);
-  };
-
-  // 从后往前的先后次序
-  const COAT = ell(-0.02, 0.36, 0.2, 0.225);
-  const HEAD = ell(0.05, 0.702, 0.108, 0.102);
-  const BEARD = tri([-0.03, 0.655], [0.195, 0.648], [0.085, 0.415]);
-  const HAT = tri([-0.08, 0.805], [0.19, 0.797], [-0.12, 0.93]);
-
-  const layers = [
-    [COAT, 0],
-    [HEAD, 2],
-    [BEARD, 3],
-    [HAT, 4],
-  ];
-  const covered = (x, y, prio) => layers.some(([test, p]) => p > prio && test(x, y));
-
-  // 每一块都带自己的优先级，被前面那块盖住的点直接丢掉
-  // 统一再提一档：他旁边就是车身上一圈亮金线，不提亮的话整个人被压没了
-  const dot = (x, y, size, tint, bright, prio) => {
-    if (covered(x, y, prio)) return;
-    put(x, y, size * 1.25 * rand(0.8, 1.2), tint, Math.min(1.6, bright * 1.35));
-  };
-  const line = (ax, ay, bx, by, count, size, tint, bright = 1, prio = 1) => {
-    for (let i = 0; i < count; i++) {
-      const t = count === 1 ? 0.5 : i / (count - 1);
-      dot(ax + (bx - ax) * t + rand(-0.006, 0.006), ay + (by - ay) * t + rand(-0.006, 0.006), size, tint, bright, prio);
-    }
-  };
-  const blob = (cx, cy, rx, ry, count, size, tint, bright = 1, prio = 0) => {
-    for (let i = 0; i < count; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random());
-      dot(cx + Math.cos(a) * rx * r, cy + Math.sin(a) * ry * r, size, tint, bright, prio);
-    }
-  };
-  const ring = (cx, cy, rx, ry, count, size, tint, bright = 1, prio = 0) => {
-    for (let i = 0; i < count; i++) {
-      const a = (i / count) * Math.PI * 2;
-      dot(cx + Math.cos(a) * rx, cy + Math.sin(a) * ry, size, tint, bright, prio);
-    }
-  };
-  const wedge = (a, b, t, count, size, tint, bright = 1, prio = 0) => {
-    for (let i = 0; i < count; i++) {
-      const u = Math.random();
-      const v = Math.random() * (1 - u);
-      dot(
-        a[0] + (b[0] - a[0]) * u + (t[0] - a[0]) * v,
-        a[1] + (b[1] - a[1]) * u + (t[1] - a[1]) * v,
-        size, tint, bright, prio
-      );
-    }
-  };
-
-  // 这个尺幅下形状靠"边"认，不靠面积：每一块都填得很淡，边上压一道亮线
-
-  // ---- 大衣 ----
-  blob(-0.02, 0.36, 0.2, 0.225, 70, 0.95, RED, 0.75, 0);
-  ring(-0.02, 0.36, 0.2, 0.225, 44, 1.45, RED, 1.35, 0);
-  line(-0.185, 0.172, 0.16, 0.172, 16, 0.9, WHITE, 1.4, 1); // 下摆白毛边
-  line(-0.205, 0.275, 0.178, 0.275, 12, 0.7, DARK, 0.85, 1); // 腰带
-  dot(0.0, 0.275, 1.3, WHITE, 1.25, 1); // 金扣
-
-  // ---- 腿和靴子 ----
-  line(-0.1, 0.16, 0.19, 0.18, 9, 0.85, RED, 1.15, 0);
-  line(0.19, 0.18, 0.23, 0.02, 8, 0.8, RED, 1.1, 0);
-  line(0.22, 0.02, 0.35, -0.045, 9, 1.0, DARK, 1.2, 1);
-
-  // ---- 手臂 ----
-  line(0.03, 0.52, 0.2, 0.455, 8, 0.85, RED, 1.15, 1);
-  line(0.2, 0.455, 0.36, 0.41, 8, 0.8, RED, 1.15, 1);
-  dot(0.378, 0.406, 1.2, WHITE, 1.3, 1); // 毛袖口
-  dot(0.418, 0.393, 1.1, SKIN, 1.2, 1); // 手
-
-  // ---- 头 ----
-  blob(0.05, 0.702, 0.108, 0.102, 18, 0.95, SKIN, 0.85, 2);
-  ring(0.05, 0.702, 0.108, 0.102, 24, 1.25, SKIN, 1.3, 2);
-  dot(0.145, 0.722, 1.1, DARK, 1.2, 2); // 眼睛
-  dot(0.176, 0.694, 1.1, SKIN, 1.2, 2); // 鼻子
-
-  // ---- 大白胡子：一个大三角。圣诞老人最好认的就是这个形，别画成圆 -
-  wedge([-0.03, 0.655], [0.195, 0.648], [0.085, 0.415], 40, 0.95, WHITE, 0.95, 3);
-  line(-0.03, 0.655, 0.085, 0.415, 8, 1.35, WHITE, 1.45, 3);
-  line(0.195, 0.648, 0.085, 0.415, 8, 1.35, WHITE, 1.45, 3);
-  line(-0.03, 0.655, 0.195, 0.648, 8, 1.2, WHITE, 1.35, 3);
-
-  // ---- 帽子：白帽檐一道杠 + 红锥体 + 绒球 ----
-  line(-0.075, 0.796, 0.2, 0.788, 16, 1.35, WHITE, 1.45, 4);
-  wedge([-0.08, 0.805], [0.19, 0.797], [-0.12, 0.93], 22, 0.95, RED, 0.8, 4);
-  line(-0.08, 0.805, -0.12, 0.93, 7, 1.3, RED, 1.4, 4);
-  line(0.19, 0.797, -0.12, 0.93, 9, 1.3, RED, 1.4, 4);
-  dot(-0.138, 0.937, 1.5, WHITE, 1.35, 5);
-
-  // ---- 车尾的礼物袋 ----
-  blob(-0.66, 0.31, 0.19, 0.19, 24, 0.85, 0.75, 0.9, 0);
-  dot(-0.66, 0.5, 1.1, 1, 0.95, 0);
-}
-
-/** 圣诞老人：正对镜头的立绘（着色器里 aFace=1 的点每帧跟着摄像机转） */
-function addSantaFigure(buf) {
-  const start = buf.positions.length / 3;
-  santaArt((x, y, size, tint, bright) => pushPoint(buf, x, y, 0, size, tint, bright));
-  for (let i = start; i < buf.positions.length / 3; i++) buf.face[i] = 1;
-
-  // 放大一点：按真实比例画出来，他在画面里只有 70px，"圣诞老人"这件事就看不清
-  const SCALE = 1.3;
-  for (let i = start; i < buf.positions.length / 3; i++) {
-    buf.positions[i * 3] *= SCALE;
-    buf.positions[i * 3 + 1] = 0.1 + (buf.positions[i * 3 + 1] - 0.1) * SCALE;
-    buf.positions[i * 3 + 2] *= SCALE;
-  }
-}
-
-// 调试用：?solo=santa 只画车里的人，方便单独检查他的造型
-const SOLO_SANTA = new URLSearchParams(location.search).get('solo') === 'santa';
-
 function buildRigGeometry() {
   const buf = makeBuffers();
 
-  if (!SOLO_SANTA) addSleighBody(buf);
-  addSantaFigure(buf);
+  addSleighBody(buf);
   // 两只鹿错开相位，不然像一起抽筋
   const DEER = [
     { ox: 2.05, oy: 0.12, s: 1.15, phase: 0 },
     { ox: 3.55, oy: 0.06, s: 1.06, phase: 2.1 },
   ];
-  if (!SOLO_SANTA) for (const d of DEER) addDeer(buf, d.ox, d.oy, d.s, d.phase);
+  for (const d of DEER) addDeer(buf, d.ox, d.oy, d.s, d.phase);
 
   // 缰绳：从车头拉到驯鹿脖子。锚点跟着鹿的缩放走，不然鹿一大就脱开了
   const neck = (d) => [d.ox + 0.36 * d.s, d.oy + 0.08 * d.s];
   for (const side of [-1, 1]) {
-    if (SOLO_SANTA) break;
     const z = side * 0.26;
     stroke(buf, 1.05, 0.16, neck(DEER[0])[0], neck(DEER[0])[1], z, 14, 1.0, 0.85);
     stroke(buf, DEER[0].ox - 0.42 * DEER[0].s, 0.16, neck(DEER[1])[0], neck(DEER[1])[1], z, 18, 1.0, 0.85);
@@ -608,7 +465,6 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
       uPixelRatio: { value: pixelRatio },
       uOpacity: { value: opacity },
       uTime: { value: 0 },
-      uFace: { value: 0 },
       uCool: { value: new THREE.Color(0xb03a30) },
       uWarm: { value: new THREE.Color(0xffcf7a) },
     },
@@ -616,7 +472,6 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
       uniform float uPixelRatio;
       uniform float uOpacity;
       uniform float uTime;
-      uniform float uFace;
 
       attribute float aSize;
       attribute float aTint;
@@ -629,7 +484,6 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
       attribute vec2 aOrigin;
       attribute float aBright;
       attribute vec3 aNormal;
-      attribute float aFace;
 
       varying float vTint;
       varying float vAlpha;
@@ -646,13 +500,6 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
       void main() {
         vec3 p = position;
 
-        // 车里的人：绕自己的竖轴转到正对镜头。整组雪橇会跟着路径转，
-        // 不转回来的话，人转到侧面就成了一条线
-        if (aFace > 0.5) {
-          float cf = cos(uFace);
-          float sf = sin(uFace);
-          p = vec3(p.x * cf + p.z * sf, p.y, -p.x * sf + p.z * cf);
-        }
 
         // 驯鹿跑起来：四腿两步。整根雪橇被 faceForward 转过 90°，
         // 侧影落在 (z, y) 平面上，所以关节也在这个平面里转。
@@ -714,6 +561,137 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 车里坐的圣诞老人：把一张现成的插画"粒子化"
+ *
+ * 自己用光点画过三版（线稿、实体表面撒点、3D 线框）都不像——这个尺幅下
+ * 手画的形状撑不住。直接贴 SVG 又和整体粒子语汇打架。
+ * 所以拿公有领域的 Classic Santa 插画（zeimusu，Openclipart #1545）当底稿：
+ * 把它栅格化后按颜色采样像素，再用彩色小光点重新拼出来。
+ * 形状来自成熟画稿，材质还是场景里的光点。
+ * ------------------------------------------------------------------ */
+
+const SANTA_SRC = './assets/santa.svg';
+
+/**
+ * 采样插画，生成点云。
+ *
+ * 直接按颜色撒点试过：白胡子会糊成一团发光的雾，脸只有 20px，全被吃掉。
+ * 关键是这个场景里能认出来的东西都是"线"（驯鹿就是线稿），
+ * 所以这里把插画拆成两层：
+ *   - 描边：插画的黑轮廓是粗线，整条抽出来画成亮金色，形状全靠它
+ *   - 填色：红帽子、肤色按原色，但要压得很暗，只当一层底色
+ */
+function buildSantaCloud(image) {
+  const H = 260;
+  const W = Math.max(1, Math.round((H * image.width) / image.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0, W, H);
+  const data = ctx.getImageData(0, 0, W, H).data;
+
+  const lines = [];
+  const fills = [];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      if (data[i + 3] < 140) continue;
+      const sum = data[i] + data[i + 1] + data[i + 2];
+      if (sum < 130) lines.push(x, y);
+      else fills.push(x, y, data[i] / 255, data[i + 1] / 255, data[i + 2] / 255);
+    }
+  }
+
+  const unit = 1.45 / H;
+  const positions = [];
+  const sizes = [];
+  const colors = [];
+  const put = (x, y, size, r, g, b) => {
+    positions.push(
+      (x - W / 2) * unit + rand(-0.004, 0.004),
+      (H / 2 - y) * unit + rand(-0.004, 0.004),
+      rand(-0.02, 0.02)
+    );
+    sizes.push(size * rand(0.85, 1.15));
+    colors.push(r, g, b);
+  };
+
+  // 描边：抽稀到 ~1000 个点，画亮金色
+  const lineTotal = lines.length / 2;
+  const lineKeep = Math.min(1, 1000 / Math.max(1, lineTotal));
+  for (let n = 0; n < lineTotal; n++) {
+    if (Math.random() > lineKeep) continue;
+    put(lines[n * 2], lines[n * 2 + 1], 0.78, 1.0, 0.85, 0.6);
+  }
+
+  // 只补一层红帽子。整张插画都铺色会糊成一团雾，
+  // 但"头上一抹红"对认人特别管用，别的颜色都可以不要
+  for (let n = 0; n < fills.length / 5; n++) {
+    const r = fills[n * 5 + 2];
+    const g = fills[n * 5 + 3];
+    const b = fills[n * 5 + 4];
+    if (r < 0.55 || g > 0.45 || b > 0.45) continue;
+    if (Math.random() > 0.35) continue;
+    put(fills[n * 5], fills[n * 5 + 1], 0.62, r * 0.55, g * 0.3, b * 0.3);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('aSize', new THREE.Float32BufferAttribute(sizes, 1));
+  geometry.setAttribute('aColor', new THREE.Float32BufferAttribute(colors, 3));
+  return geometry;
+}
+
+function makeSantaMaterial(pixelRatio) {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uPixelRatio: { value: pixelRatio },
+      uOpacity: { value: 0 },
+      uTime: { value: 0 },
+    },
+    vertexShader: /* glsl */ `
+      uniform float uPixelRatio;
+      uniform float uOpacity;
+      uniform float uTime;
+
+      attribute float aSize;
+      attribute vec3 aColor;
+
+      varying vec3 vColor;
+      varying float vAlpha;
+
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+
+        float twinkle = 0.8 + 0.2 * sin(uTime * 4.0 + position.x * 30.0 + position.y * 21.0);
+        gl_PointSize = aSize * uPixelRatio * twinkle * (30.0 / max(1.0, -mv.z));
+
+        vColor = aColor;
+        vAlpha = uOpacity * twinkle;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec3 vColor;
+      varying float vAlpha;
+
+      void main() {
+        float d = length(gl_PointCoord - 0.5);
+        float falloff = smoothstep(0.5, 0.05, d);
+        float alpha = falloff * vAlpha;
+        if (alpha < 0.01) discard;
+        gl_FragColor = vec4(vColor, alpha);
+      }
+    `,
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * 主入口
  * ------------------------------------------------------------------ */
 
@@ -724,6 +702,7 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
 
   const glowTexture = createGlowTexture(128);
   const faceTmp = new THREE.Vector3();
+  let pixelRatio = 1;
 
   /* ---------------- 路径采样 ---------------- */
 
@@ -778,6 +757,25 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
   const rigGroup = new THREE.Group();
   rigGroup.scale.setScalar(1.3);
   group.add(rigGroup);
+
+  // 车里的人：一张插画粒子化出来的点云，每个点带自己的颜色
+  const santaGroup = new THREE.Group();
+  santaGroup.position.set(0, 0.5, 0.02);
+  rigGroup.add(santaGroup);
+  const santaMat = makeSantaMaterial(pixelRatio);
+  let santaCloud = null;
+  {
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => {
+      santaCloud = new THREE.Points(buildSantaCloud(img), santaMat);
+      santaCloud.frustumCulled = false;
+      santaCloud.renderOrder = 9;
+      santaGroup.add(santaCloud);
+    };
+    img.onerror = () => console.warn('圣诞老人的底图没加载出来');
+    img.src = SANTA_SRC;
+  }
 
   const rigMaterial = makeMaterial();
   const rigPoints = new THREE.Points(buildRigGeometry(), rigMaterial);
@@ -839,7 +837,6 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
   let running = false;
   let startedAt = 0;
   let lastTime = 0;
-  let pixelRatio = 1;
 
   const cursor = new THREE.Vector3();
   const detachAt = new THREE.Vector3();
@@ -1035,6 +1032,8 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       const alpha = Math.min(clamp01(local / 0.04), 1 - clamp01((local - 0.93) / 0.07));
 
       rigMaterial.uniforms.uOpacity.value = alpha;
+      santaMat.uniforms.uOpacity.value = alpha;
+      santaMat.uniforms.uTime.value = time;
       rigMaterial.uniforms.uTime.value = time;
       trailMaterial.uniforms.uOpacity.value = alpha * 0.9;
       trailMaterial.uniforms.uTime.value = time;
@@ -1054,19 +1053,18 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       updatePhotos(local, time);
     },
 
-    /** 让车里的立绘正对镜头。每帧在 update 之后调一次 */
+    /** 让车里那张立绘正对镜头 */
     faceCamera(camera) {
       if (!running) return;
       faceTmp.copy(camera.position);
       group.worldToLocal(faceTmp);
-      // 立绘本来在 XY 平面，但整组的 faceForward 把它转到了 ZY 平面，
-      // 法线是 +x，所以要让 +x 指向摄像机：u = atan2(-z, x)
-      rigMaterial.uniforms.uFace.value = Math.atan2(-faceTmp.z, faceTmp.x);
+      santaGroup.rotation.y = Math.atan2(faceTmp.x, faceTmp.z);
     },
 
     setPixelRatio(value) {
       pixelRatio = value;
       rigMaterial.uniforms.uPixelRatio.value = value;
+      santaMat.uniforms.uPixelRatio.value = value;
       trailMaterial.uniforms.uPixelRatio.value = value;
     },
 
@@ -1097,6 +1095,8 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       lampMaterial.dispose();
       rearMaterial.dispose();
       glowTexture.dispose();
+      santaCloud?.geometry.dispose();
+      santaMat.dispose();
       group.clear();
     },
   };
