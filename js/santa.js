@@ -573,16 +573,15 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
 const SANTA_SRC = './assets/santa.svg';
 
 /**
- * 采样插画，生成点云。
+ * 把插画"翻译"成一束发光的丝带。
  *
- * 直接按颜色撒点试过：白胡子会糊成一团发光的雾，脸只有 20px，全被吃掉。
- * 关键是这个场景里能认出来的东西都是"线"（驯鹿就是线稿），
- * 所以这里把插画拆成两层：
- *   - 描边：插画的黑轮廓是粗线，整条抽出来画成亮金色，形状全靠它
- *   - 填色：红帽子、肤色按原色，但要压得很暗，只当一层底色
+ * 试过的两条路：按颜色铺满点（糊成白团）、只抽黑线（像速写、不好看）。
+ * 现在这条：仍然只取轮廓线（形状靠线才立得住），但每一笔的颜色从它
+ * 旁边的布料上取——帽子那圈是红的、胡子那圈是白的——再用更大更柔的
+ * 光点，让相邻的线连起来，看着就像一条条会发光的光带。
  */
 function buildSantaCloud(image) {
-  const H = 260;
+  const H = 300;
   const W = Math.max(1, Math.round((H * image.width) / image.height));
   const canvas = document.createElement('canvas');
   canvas.width = W;
@@ -591,49 +590,71 @@ function buildSantaCloud(image) {
   ctx.drawImage(image, 0, 0, W, H);
   const data = ctx.getImageData(0, 0, W, H).data;
 
-  const lines = [];
-  const fills = [];
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = (y * W + x) * 4;
-      if (data[i + 3] < 140) continue;
-      const sum = data[i] + data[i + 1] + data[i + 2];
-      if (sum < 130) lines.push(x, y);
-      else fills.push(x, y, data[i] / 255, data[i + 1] / 255, data[i + 2] / 255);
-    }
-  }
+  const at = (x, y) => (y * W + x) * 4;
+  const isDark = (i) => data[i + 3] > 150 && data[i] + data[i + 1] + data[i + 2] < 150;
+  const isFabric = (i) => data[i + 3] > 150 && data[i] + data[i + 1] + data[i + 2] >= 150 && data[i] + data[i + 1] + data[i + 2] < 720;
 
-  const unit = 1.45 / H;
+  /** 在周围找一圈布料，取平均色；找不到就退回暖金色 */
+  const fabricNear = (x, y, out) => {
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let n = 0;
+    for (let dy = -6; dy <= 6; dy += 2) {
+      for (let dx = -6; dx <= 6; dx += 2) {
+        const px = x + dx;
+        const py = y + dy;
+        if (px < 0 || py < 0 || px >= W || py >= H) continue;
+        const i = at(px, py);
+        if (!isFabric(i)) continue;
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+        n += 1;
+      }
+    }
+    if (!n) {
+      out[0] = 1.0;
+      out[1] = 0.86;
+      out[2] = 0.62;
+      return;
+    }
+    out[0] = r / n / 255;
+    out[1] = g / n / 255;
+    out[2] = b / n / 255;
+  };
+
+  const unit = 1.35 / H;
   const positions = [];
   const sizes = [];
   const colors = [];
-  const put = (x, y, size, r, g, b) => {
-    positions.push(
-      (x - W / 2) * unit + rand(-0.004, 0.004),
-      (H / 2 - y) * unit + rand(-0.004, 0.004),
-      rand(-0.02, 0.02)
-    );
-    sizes.push(size * rand(0.85, 1.15));
-    colors.push(r, g, b);
-  };
+  const rgb = [0, 0, 0];
 
-  // 描边：抽稀到 ~1000 个点，画亮金色
-  const lineTotal = lines.length / 2;
-  const lineKeep = Math.min(1, 1000 / Math.max(1, lineTotal));
-  for (let n = 0; n < lineTotal; n++) {
-    if (Math.random() > lineKeep) continue;
-    put(lines[n * 2], lines[n * 2 + 1], 0.78, 1.0, 0.85, 0.6);
-  }
-
-  // 只补一层红帽子。整张插画都铺色会糊成一团雾，
-  // 但"头上一抹红"对认人特别管用，别的颜色都可以不要
-  for (let n = 0; n < fills.length / 5; n++) {
-    const r = fills[n * 5 + 2];
-    const g = fills[n * 5 + 3];
-    const b = fills[n * 5 + 4];
-    if (r < 0.55 || g > 0.45 || b > 0.45) continue;
-    if (Math.random() > 0.35) continue;
-    put(fills[n * 5], fills[n * 5 + 1], 0.62, r * 0.55, g * 0.3, b * 0.3);
+  // 每隔一行取一次，线才不会被点糊死
+  for (let y = 0; y < H; y += 2) {
+    for (let x = 0; x < W; x += 2) {
+      const i = at(x, y);
+      if (!isDark(i)) continue;
+      if (Math.random() > 0.85) continue;
+      fabricNear(x, y, rgb);
+      // 白色布料提亮当高光，红色布料保留红
+      const lift = 0.55 + 0.45 * Math.max(rgb[0], rgb[1], rgb[2]);
+      const px = (x - W / 2) * unit + rand(-0.004, 0.004);
+      const py = (H / 2 - y) * unit + rand(-0.004, 0.004);
+      const pz = rand(-0.05, 0.05);
+      const size = rand(1.05, 1.75);
+      const cr = rgb[0] * lift * 1.15;
+      const cg = rgb[1] * lift * 1.15;
+      const cb = rgb[2] * lift * 1.15;
+      // 一根丝带是"亮芯 + 外晕"：同一处放一大一小两颗，
+      // 小的当芯、大的当晕，看起来才是一道光带而不是一串珠子
+      positions.push(px, py, pz);
+      sizes.push(size);
+      colors.push(cr, cg, cb);
+      positions.push(px, py, pz);
+      sizes.push(size * 1.9);
+      colors.push(cr * 0.16, cg * 0.16, cb * 0.16);
+    }
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -763,6 +784,21 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
   santaGroup.position.set(0, 0.5, 0.02);
   rigGroup.add(santaGroup);
   const santaMat = makeSantaMaterial(pixelRatio);
+
+  // 背后一团很淡的光晕：有了它，人是"在发亮"，而不是贴了一张画
+  const santaHalo = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: glowTexture,
+      color: 0xffb070,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      opacity: 0,
+    })
+  );
+  santaHalo.scale.setScalar(1.35);
+  santaGroup.add(santaHalo);
   let santaCloud = null;
   {
     const img = new Image();
@@ -1034,6 +1070,8 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       rigMaterial.uniforms.uOpacity.value = alpha;
       santaMat.uniforms.uOpacity.value = alpha;
       santaMat.uniforms.uTime.value = time;
+      santaHalo.material.opacity = alpha * 0.22;
+      santaHalo.scale.setScalar(1.35 + Math.sin(time * 1.7) * 0.04);
       rigMaterial.uniforms.uTime.value = time;
       trailMaterial.uniforms.uOpacity.value = alpha * 0.9;
       trailMaterial.uniforms.uTime.value = time;
@@ -1097,6 +1135,7 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
       glowTexture.dispose();
       santaCloud?.geometry.dispose();
       santaMat.dispose();
+      santaHalo.material.dispose();
       group.clear();
     },
   };
