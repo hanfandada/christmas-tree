@@ -133,7 +133,10 @@ world.add(ornaments.group);
 const star = createStar();
 world.add(star.group);
 
-const trunk = createTrunk();
+const trunk = createTrunk({
+  count: Math.round(quality.tree * 0.12),
+  reducedMotion,
+});
 world.add(trunk.group);
 
 const ground = createGround();
@@ -923,6 +926,7 @@ function animate() {
     : clamp01((elapsed - TIMELINE.growDelay) / TIMELINE.growDuration);
   // 用线性推进：easeOut 会把前 1/3 的时间冲掉，看上去还是"一下就亮完了"
   tree.setProgress(growRaw);
+  trunk.setProgress(growRaw);
 
   const ornamentReveal = reducedMotion
     ? 1

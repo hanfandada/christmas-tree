@@ -148,7 +148,7 @@ js/
   config.js         几何尺寸、配色、画质档位、相机 —— 调参入口
   background.js     天幕渐变与星云
   tree.js           树体粒子与螺旋灯串（着色器）
-  trunk.js          树干与余烬
+  trunk.js          树干：整根由粒子堆出来的圆柱 + 上升的余烬
   ornaments.js      发光球挂饰（装饰用）
   photo-ornaments.js 照片挂饰：动态布点、朝向、淡出、拾取
   photos.js         照片压缩与 IndexedDB 存取
@@ -162,7 +162,6 @@ js/
   snow.js           飘雪（远 / 近两层，强度可调）
   sky.js            远景星空
   ground.js         地面、接触阴影、落光
-  trunk.js          树干与余烬粒子
   burst.js          点击星火
   textures.js       程序化生成的柔光贴图
 vendor/three/       three.js r187（内嵌，含 OrbitalControls 与后期模块）
