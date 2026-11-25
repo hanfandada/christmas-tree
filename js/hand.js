@@ -5,6 +5,8 @@
  *  - 比心、大拇指：姿势保持 HOLD_MS 就触发，属于"摆出来就出"
  *  - 握拳→张开：序列手势，要先把拳头稳住 PALM_HOLD_MS，再张开才算完成，
  *    这样单纯挥手、打字、张开手掌都不会误触
+ *  - 组合技：握拳 → 张开 → 再握拳，全程只有"拳"和"掌"两种状态。
+ *    试过用捏合收尾，但捏合和比心的手型几乎重合，真机上分不开，弃用
  *
  * 设计约束：
  *  - 模型与 wasm 全部 vendor 在 vendor/mediapipe/，点按钮时才动态 import，
@@ -32,6 +34,9 @@ const RELEASE_STREAK = 2; // 连续几帧没姿势才重新上膛
 const PALM_HOLD_MS = 180; // 握拳要稳住这么久，张开才算数（太短会误触）
 const FIST_TIMEOUT = 3000; // 握拳之后多久还没张开就作废
 const COMBO_GRACE = 900; // 组合技触发后这段时间里屏蔽比心，免得同一下炸两颗心
+// 组合技第二步（再握一拳）要求的连续帧数。张开→握合中间会短暂经过半握，
+// 用 MIN_STREAK 那 2 帧会被过渡帧误判成"第二拳"
+const FIST_FIRE_STREAK = 4;
 
 // 送进模型前先缩到这个宽度：640×480 直接喂太浪费。
 // 256 更省算力，但真机上小图更容易丢手，先用回 320 这个验证过的值。
@@ -281,7 +286,7 @@ export function createHandTracker({
   onHeart,
   onThumb,
   onPalm,
-  onPinch,
+  onCombo,
   onTrack,
   onStatus,
   roi: roiEnabled = true,
@@ -315,15 +320,13 @@ export function createHandTracker({
   let lastFire = -Infinity;
   let armed = true;
 
-  // 序列状态机（握拳 → 张开 → 捏合）
+  // 序列状态机（握拳 → 张开 → 再握拳）
   let fistStreak = 0;
   let openStreak = 0;
-  let pinchStreak = 0;
   let neutralStreak = 0;
   let palmStage = 'idle'; // idle | fist | mixed
   let palmSince = 0;
   let lastPalmFire = -Infinity;
-  let lastPinchFire = -Infinity;
   let lastComboAt = -Infinity;
   let lastPalmLatency = null;
 
@@ -518,29 +521,28 @@ export function createHandTracker({
   function resetPalm() {
     fistStreak = 0;
     openStreak = 0;
-    pinchStreak = 0;
     neutralStreak = 0;
     palmStage = 'idle';
   }
 
   /**
-   * 组合技序列：握拳 → 张开（炸开）→ 捏合（成字）。
+   * 组合技序列：握拳 → 张开（炸开）→ 再握拳（成字）。
    *
-   * 两个真机上踩到的坑：
+   * 三个真机上踩到的坑：
    *  - 握拳到张开之间会经过几帧"既不是拳也不是完全张开"，不能因为这几帧就作废，
    *    改成给整段一个超时（FIST_TIMEOUT），中间怎么动都行
-   *  - 捏合和比心的手型几乎一样，所以进入 mixed 之后要屏蔽比心；
-   *    而且捏合触发之后那几帧还要继续屏蔽，不然会同时炸一颗心
-   * @returns {'open'|'pinch'|null} 这一帧完成的那一步
+   *  - 起手只在 idle 时收拳。mixed 阶段里如果也走起手分支，第二拳会被当成
+   *    "重新开始一轮"直接吞掉，永远等不到聚字
+   *  - 第二拳要求连续 FIST_FIRE_STREAK 帧，2 帧会被张开→握合的过渡帧骗到
+   * @returns {'open'|'combo'|null} 这一帧完成的那一步
    */
-  function updatePalm(now, fist, open, pinch) {
+  function updatePalm(now, fist, open) {
     fistStreak = fist.isFist ? fistStreak + 1 : 0;
     openStreak = open.isOpen ? openStreak + 1 : 0;
-    pinchStreak = pinch.isPinch ? pinchStreak + 1 : 0;
-    neutralStreak = !fist.isFist && !open.isOpen && !pinch.isPinch ? neutralStreak + 1 : 0;
+    neutralStreak = !fist.isFist && !open.isOpen ? neutralStreak + 1 : 0;
 
-    // 新的一拳：重新开始一轮（组合技中途也能用它打断）
-    if (palmStage !== 'fist' && fistStreak >= MIN_STREAK) {
+    // 起手：只在完全空闲时收第一拳
+    if (palmStage === 'idle' && fistStreak >= MIN_STREAK) {
       palmStage = 'fist';
       palmSince = now;
       return null;
@@ -571,11 +573,10 @@ export function createHandTracker({
         return null;
       }
       if (now - palmSince < PALM_HOLD_MS) return null;
-      if (pinchStreak >= MIN_STREAK && now - lastPinchFire >= COOLDOWN_MS) {
-        lastPinchFire = now;
+      if (fistStreak >= FIST_FIRE_STREAK) {
         lastComboAt = now;
         palmStage = 'idle';
-        return 'pinch';
+        return 'combo';
       }
     }
     return null;
@@ -608,11 +609,11 @@ export function createHandTracker({
     const wasInCombo = palmStage === 'mixed';
 
     // 序列手势独立于下面比心 / 大拇指的"保持触发"
-    const comboStep = updatePalm(now, fist, open, pinch);
+    const comboStep = updatePalm(now, fist, open);
     if (comboStep === 'open') {
       onPalm?.({ ...pos, latency: lastPalmLatency });
-    } else if (comboStep === 'pinch') {
-      onPinch?.({ ...pos });
+    } else if (comboStep === 'combo') {
+      onCombo?.({ ...pos });
     }
 
     // 组合技期间、以及刚触发完的 0.9 秒内，都不判比心 / 大拇指
@@ -620,7 +621,6 @@ export function createHandTracker({
     let kind = null;
     if (!suppress && heart.isHeart) kind = 'heart';
     else if (!suppress && thumb.isThumbUp) kind = 'thumb';
-    else if (pinch.isPinch && suppress) kind = 'pinch';
     else if (fist.isFist) kind = 'fist';
     else if (open.isOpen) kind = 'open';
 
@@ -644,7 +644,7 @@ export function createHandTracker({
 
     const held = now - since;
     const progress = armed ? Math.min(1, held / HOLD_MS) : 0;
-    const palmKind = kind === 'fist' || kind === 'open' || kind === 'pinch';
+    const palmKind = kind === 'fist' || kind === 'open';
     // 拳头 / 张开手掌只驱动准星蓄力，真正触发在 updatePalm 里
     const displayProgress = palmKind
       ? palmStage === 'fist'

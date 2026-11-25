@@ -516,7 +516,7 @@ async function hydratePhotos() {
 
 /* ---------------- 组合技：粒子炸开 → 拼成 Merry Christmas ---------------- */
 
-const COMBO_WINDOW = 8000; // 炸开之后多久内要捏合
+const COMBO_WINDOW = 8000; // 炸开之后多久内要再握一拳
 const TEXT_HOLD = 4200; // 成字后停留多久自动散掉
 
 let comboTimer = 0;
@@ -691,7 +691,7 @@ const handTracker = createHandTracker({
   onHeart: ({ x, y }) => gestureFx.burst('heart', x, y),
   onThumb: ({ x, y }) => gestureFx.burst('thumb', x, y),
   onPalm: () => openCompose(),
-  onPinch: () => composeToText(),
+  onCombo: () => composeToText(),
   onStatus: (status) => {
     const busy = status === 'loading';
     // 加载中也可以再点一次取消
@@ -712,7 +712,7 @@ const handTracker = createHandTracker({
         // 隐私模式存不了，最多下次多等一会儿
       }
       // 拳头比张开的手难检测，先张手让模型锁定，再握起来跟踪才稳
-      showToast('先张手让摄像头看到你，再比心 / 握拳 / 捏合');
+      showToast('先张手让摄像头看到你，再比心 / 握拳；组合技：握拳 → 张开 → 再握拳');
     } else if (gestureMessages[status]) {
       showToast(gestureMessages[status]);
     }
