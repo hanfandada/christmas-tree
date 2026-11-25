@@ -64,9 +64,15 @@ function makeBuffers() {
     amp: [],
     phase: [],
     origin: [],
+    // 表面法线。实体表面撒出来的点带法线，着色器据此剔掉背面，
+    // 否则加法混合没有深度遮挡，球的前后两层会叠在一起，正面看就是一团散点。
+    // 线稿点这里是 (0,0,0)，表示"不用剔"
+    normals: [],
     // 亮度系数：暗色的体积点、远侧的腿靠它压下去，
     // 光靠 tint 只改色相，不改明暗
     bright: [],
+    // 1 = 这一粒属于车里的圣诞老人，着色器会把它绕竖轴转到正对镜头
+    face: [],
   };
 }
 
@@ -81,7 +87,9 @@ function pushPoint(buf, x, y, z, size, tint, bright = 1) {
   buf.amp.push(0);
   buf.phase.push(0);
   buf.origin.push(0, 0);
+  buf.normals.push(0, 0, 0);
   buf.bright.push(bright);
+  buf.face.push(0);
 }
 
 /** 一条抖动的线段：线稿的基本单位 */
@@ -140,6 +148,8 @@ function buildPoints(buf) {
   geometry.setAttribute('aPhase', new THREE.Float32BufferAttribute(buf.phase, 1));
   geometry.setAttribute('aOrigin', new THREE.Float32BufferAttribute(buf.origin, 2));
   geometry.setAttribute('aBright', new THREE.Float32BufferAttribute(buf.bright, 1));
+  geometry.setAttribute('aNormal', new THREE.Float32BufferAttribute(buf.normals, 3));
+  geometry.setAttribute('aFace', new THREE.Float32BufferAttribute(buf.face, 1));
   return geometry;
 }
 
@@ -147,7 +157,7 @@ function buildPoints(buf) {
  * 把真实几何体的三角形表面撒成点云
  * ------------------------------------------------------------------ */
 
-function sampleSurface(geometry, count, buf, size, tint) {
+function sampleSurface(geometry, count, buf, size, tint, bright = 1) {
   const geo = geometry.index ? geometry.toNonIndexed() : geometry;
   const pos = geo.attributes.position;
   const triCount = Math.floor(pos.count / 3);
@@ -194,8 +204,15 @@ function sampleSurface(geometry, count, buf, size, tint) {
       a.y + (b.y - a.y) * u + (c.y - a.y) * v,
       a.z + (b.z - a.z) * u + (c.z - a.z) * v,
       size * rand(0.7, 1.35),
-      tint
+      tint,
+      bright
     );
+    // 这一片的法线：背面剔除要用
+    const n = ab.subVectors(b, a).cross(ac.subVectors(c, a)).normalize();
+    const last = buf.positions.length / 3 - 1;
+    buf.normals[last * 3] = n.x;
+    buf.normals[last * 3 + 1] = n.y;
+    buf.normals[last * 3 + 2] = n.z;
   }
 }
 
@@ -404,145 +421,162 @@ function addDeer(buf, ox, oy, s, phase = 0) {
   }
 }
 
-/**
- * 坐在车里的圣诞老人。
- * 座面在 y=0.1、靠背在 x -0.4 一带，所以人是"坐"进去的：
- * 大腿前伸、小腿垂下、靴子朝前，上身略微后仰，再往前伸手抓缰绳。
+/* ------------------------------------------------------------------ *
+ * 圣诞老人：永远正对镜头的立绘
  *
- * 画法跟驯鹿一致，用线稿而不是纯椭圆——一个椭圆加一坨白点，
- * 放大看是个红气球，缩小看什么都不是。这里先把背、胸、下摆勾出来，
- * 再压上大胡子、帽檐和下摆的白毛边，白比红好认。
+ * 试过三条路：
+ *  - 侧面线稿：雪橇绕树飞，转到正对镜头就成了一条线；
+ *  - 实体表面撒点：加法混合没有深度遮挡，前后两层叠在一起；而且他在画面里
+ *    只有 70px，撒满表面只会糊成一团白烟；
+ *  - 3D 线框（正交圆环 + 母线）：从侧面看那些水平环塌成横条，像条形码。
+ * 这个尺幅下唯一稳的办法是让画永远正对镜头：点云本身是平面立绘，
+ * 着色器每帧按摄像机方位绕他的竖轴转一下。雪橇转多少他都还是那副样子。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 画一遍圣诞老人的立绘。
+ *
+ * 关键是各块**不能重叠**：这个材质是加法混合，也没有深度遮挡，
+ * 胡子和头叠在一起就会亮成一块白，大衣和胡子叠在一起会变成橙白，
+ * 最后只剩一团光。所以按"纸偶"来画——每一块只画它自己露出来的那部分，
+ * 被前面那块盖住的点直接扔掉。
  */
-function addSantaFigure(buf) {
-  const start = buf.positions.length / 3;
-  const Z = 0.07; // 稍微偏近侧，免得和车身中线的点糊在一起
-  const RED = 0.06; // 大衣：偏冷的那一端，也就是红
-  const WHITE = 1; // 毛边、胡子：暖白
-  const SKIN = 0.85;
+function santaArt(put) {
+  const RED = 0.04; // 大衣
+  const WHITE = 1; // 毛边、胡子、帽檐
+  const SKIN = 0.86;
+  const DARK = 0;
 
-  // ---- 大衣轮廓：背 → 肩 → 胸 → 肚子 → 下摆 ----
-  const back = [
-    [-0.18, 0.15],
-    [-0.21, 0.33],
-    [-0.14, 0.5],
-    [0.0, 0.555],
+  const ell = (cx, cy, rx, ry) => (x, y) => ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1;
+  const tri = (a, b, c) => (x, y) => {
+    const d1 = (x - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (y - b[1]);
+    const d2 = (x - c[0]) * (b[1] - c[1]) - (b[0] - c[0]) * (y - c[1]);
+    const d3 = (x - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (y - a[1]);
+    const neg = d1 < 0 || d2 < 0 || d3 < 0;
+    const pos = d1 > 0 || d2 > 0 || d3 > 0;
+    return !(neg && pos);
+  };
+
+  // 从后往前的先后次序
+  const COAT = ell(-0.02, 0.36, 0.2, 0.225);
+  const HEAD = ell(0.05, 0.702, 0.108, 0.102);
+  const BEARD = ell(0.078, 0.566, 0.098, 0.092);
+  const BEARD_TIP = tri([-0.015, 0.52], [0.17, 0.52], [0.08, 0.41]);
+  const HAT = tri([-0.08, 0.79], [0.19, 0.782], [-0.12, 0.93]);
+
+  const layers = [
+    [COAT, 0],
+    [HEAD, 2],
+    [BEARD, 3],
+    [BEARD_TIP, 3],
+    [HAT, 4],
   ];
-  for (let i = 0; i < back.length - 1; i++) {
-    stroke(buf, back[i][0], back[i][1], back[i + 1][0], back[i + 1][1], Z + 0.09, 6, 2.0, RED, 1.1);
-  }
-  const chest = [
-    [0.0, 0.555],
-    [0.14, 0.47],
-    [0.175, 0.29],
-    [0.14, 0.15],
-  ];
-  for (let i = 0; i < chest.length - 1; i++) {
-    stroke(buf, chest[i][0], chest[i][1], chest[i + 1][0], chest[i + 1][1], Z + 0.1, 6, 2.0, RED, 1.15);
-  }
-  stroke(buf, 0.14, 0.15, -0.18, 0.15, Z + 0.1, 8, 2.0, RED, 1.1); // 下摆
+  const covered = (x, y, prio) => layers.some(([test, p]) => p > prio && test(x, y));
 
-  // 大衣不是个空圈：里面塞满暗红点，侧面看才是实心的身子
-  for (let i = 0; i < 96; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.pow(Math.random(), 0.45);
-    pushPoint(
-      buf,
-      -0.02 + Math.cos(a) * 0.145 * r,
-      0.35 + Math.sin(a) * 0.185 * r,
-      Z + rand(-0.08, 0.08),
-      rand(0.9, 1.6),
-      RED,
-      0.75
-    );
-  }
+  // 每一块都带自己的优先级，被前面那块盖住的点直接丢掉
+  const dot = (x, y, size, tint, bright, prio) => {
+    if (covered(x, y, prio)) return;
+    put(x, y, size * rand(0.8, 1.2), tint, bright);
+  };
+  const line = (ax, ay, bx, by, count, size, tint, bright = 1, prio = 1) => {
+    for (let i = 0; i < count; i++) {
+      const t = count === 1 ? 0.5 : i / (count - 1);
+      dot(ax + (bx - ax) * t + rand(-0.006, 0.006), ay + (by - ay) * t + rand(-0.006, 0.006), size, tint, bright, prio);
+    }
+  };
+  const blob = (cx, cy, rx, ry, count, size, tint, bright = 1, prio = 0) => {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random());
+      dot(cx + Math.cos(a) * rx * r, cy + Math.sin(a) * ry * r, size, tint, bright, prio);
+    }
+  };
+  const wedge = (a, b, t, count, size, tint, bright = 1, prio = 0) => {
+    for (let i = 0; i < count; i++) {
+      const u = Math.random();
+      const v = Math.random() * (1 - u);
+      dot(
+        a[0] + (b[0] - a[0]) * u + (t[0] - a[0]) * v,
+        a[1] + (b[1] - a[1]) * u + (t[1] - a[1]) * v,
+        size, tint, bright, prio
+      );
+    }
+  };
 
-  // 下摆的白毛边 + 腰带金扣
-  stroke(buf, -0.17, 0.158, 0.14, 0.158, Z + 0.11, 10, 1.9, WHITE, 1.25);
-  stroke(buf, -0.19, 0.255, 0.16, 0.255, Z + 0.12, 9, 1.3, 0, 0.7);
-  pushPoint(buf, 0.0, 0.255, Z + 0.13, 2.8, 1);
+  // ---- 大衣：一整块实心的红 ----
+  blob(-0.02, 0.36, 0.2, 0.225, 260, 0.75, RED, 1.05, 0);
+  // 下摆白毛边 + 腰带金扣
+  line(-0.185, 0.172, 0.16, 0.172, 16, 0.7, WHITE, 1.15, 1);
+  line(-0.205, 0.275, 0.178, 0.275, 12, 0.6, DARK, 0.85, 1);
+  dot(0.0, 0.275, 1.3, WHITE, 1.2, 1);
 
-  // ---- 腿：大腿前伸 → 小腿垂下 → 靴子朝前 ----
-  stroke(buf, -0.08, 0.14, 0.17, 0.155, Z + 0.07, 7, 1.7, RED, 1);
-  stroke(buf, 0.17, 0.155, 0.21, 0.0, Z + 0.07, 6, 1.6, RED, 1);
-  stroke(buf, 0.2, 0.005, 0.33, -0.06, Z + 0.08, 6, 2.0, 0, 1.2); // 靴子
-  // 远侧那条腿，压暗
-  stroke(buf, -0.11, 0.13, 0.14, 0.14, Z - 0.08, 5, 1.1, RED, 0.4);
-  stroke(buf, 0.14, 0.14, 0.18, 0.0, Z - 0.08, 5, 1.0, RED, 0.4);
+  // ---- 腿和靴子 ----
+  line(-0.1, 0.16, 0.19, 0.18, 9, 0.7, RED, 1, 0);
+  line(0.19, 0.18, 0.23, 0.02, 8, 0.68, RED, 0.95, 0);
+  line(0.22, 0.02, 0.35, -0.045, 9, 0.85, DARK, 1.15, 1);
 
-  // ---- 手臂：往前伸，抓缰绳 ----
-  stroke(buf, 0.05, 0.49, 0.22, 0.43, Z + 0.1, 6, 1.7, RED, 1.1);
-  stroke(buf, 0.22, 0.43, 0.38, 0.39, Z + 0.1, 6, 1.6, RED, 1.1);
-  pushPoint(buf, 0.395, 0.388, Z + 0.1, 2.8, WHITE, 1.3); // 毛袖口
-  pushPoint(buf, 0.44, 0.372, Z + 0.1, 2.6, SKIN, 1.15); // 手
+  // ---- 手臂 ----
+  line(0.03, 0.52, 0.2, 0.455, 8, 0.7, RED, 1.05, 1);
+  line(0.2, 0.455, 0.36, 0.41, 8, 0.68, RED, 1.05, 1);
+  dot(0.378, 0.406, 1.1, WHITE, 1.2, 1);
+  dot(0.418, 0.393, 1.0, SKIN, 1.1, 1);
 
-  // ---- 大胡子：从下巴铺到胸口，往下收成尖 ----
-  // 一定要比帽檐低，中间留出脸，不然白胡子会和白帽檐连成一坨
-  for (let i = 0; i < 34; i++) {
-    const t = Math.random();
-    const y = 0.648 - t * 0.225;
-    const half = 0.078 * (1 - t) + 0.016 * t;
-    pushPoint(
-      buf,
-      0.1 + rand(-half, half) + t * 0.015,
-      y,
-      Z + 0.1 + rand(-0.03, 0.03),
-      rand(1.1, 1.8),
-      WHITE,
-      1.15
-    );
-  }
-  // 胡子的两条边，勾出来才不是一团白雾
-  for (let i = 0; i < 8; i++) {
-    const t = i / 7;
-    const half = 0.078 * (1 - t) + 0.016 * t;
-    const y = 0.648 - t * 0.225;
-    pushPoint(buf, 0.1 - half + t * 0.015, y, Z + 0.12, 1.9, WHITE, 1.3);
-    pushPoint(buf, 0.1 + half + t * 0.015, y, Z + 0.12, 1.9, WHITE, 1.3);
-  }
+  // ---- 头：只画没被胡子和帽子盖住的那条脸 ----
+  blob(0.05, 0.702, 0.108, 0.102, 70, 0.7, SKIN, 1.05, 2);
+  dot(0.145, 0.722, 1.0, DARK, 1.15, 2);
+  dot(0.176, 0.694, 1.0, SKIN, 1.2, 2);
 
-  // ---- 脸：夹在白胡子和白帽檐中间的一条 ----
-  ellipse(buf, 0.105, 0.705, 0.075, 0.058, Z + 0.09, 16, 1.7, SKIN, 1.15);
-  pushPoint(buf, 0.152, 0.716, Z + 0.14, 3.0, 0.25, 1.3); // 眼睛
+  // ---- 大白胡子 ----
+  blob(0.075, 0.578, 0.118, 0.098, 80, 0.72, WHITE, 1.1, 3);
+  wedge([-0.035, 0.53], [0.185, 0.53], [0.08, 0.41], 30, 0.7, WHITE, 1.05, 3);
+  line(0.15, 0.635, 0.203, 0.66, 4, 0.7, WHITE, 1.15, 3);
+  line(0.15, 0.6, 0.203, 0.618, 4, 0.7, WHITE, 1.15, 3);
 
-  // ---- 尖帽子：白帽檐 → 红锥体往后再垂 → 绒球 ----
-  stroke(buf, 0.0, 0.768, 0.2, 0.762, Z + 0.1, 9, 2.0, WHITE, 1.2);
-  stroke(buf, 0.045, 0.782, -0.075, 0.868, Z + 0.08, 6, 1.8, RED, 1.15);
-  stroke(buf, -0.075, 0.868, -0.215, 0.852, Z + 0.07, 6, 1.7, RED, 1.1);
-  pushPoint(buf, -0.252, 0.846, Z + 0.07, 3.6, WHITE, 1.35);
+  // ---- 白帽檐一道杠 ----
+  line(-0.075, 0.796, 0.2, 0.788, 18, 0.85, WHITE, 1.25, 4);
+  // ---- 红尖帽，往后倒 ----
+  wedge([-0.08, 0.805], [0.19, 0.797], [-0.12, 0.93], 55, 0.72, RED, 1.1, 4);
+  dot(-0.138, 0.937, 1.4, WHITE, 1.25, 5);
 
   // ---- 车尾的礼物袋 ----
-  ellipse(buf, -0.68, 0.33, 0.17, 0.17, 0, 16, 1.5, 0.8, 0.9);
-  pushPoint(buf, -0.68, 0.5, 0, 2.6, 1);
-  // 车头挂的小灯
-  pushPoint(buf, 0.5, 0.26, 0, 3.0, 1);
+  blob(-0.66, 0.31, 0.19, 0.19, 34, 0.7, 0.75, 0.9, 0);
+  dot(-0.66, 0.5, 1.0, 1, 0.95, 0);
+}
 
-  // 整体放大一点。雪橇在画面里只有 140px 宽，人只有 50px 高，
-  // 按真实比例画出来就是"车里有团红的"，所以这里以座位为支点放大，
-  // 让圣诞老人比写实比例稍微夸张一点
-  const SCALE = 1.18;
-  const end = buf.positions.length / 3;
-  for (let i = start; i < end; i++) {
+/** 圣诞老人：正对镜头的立绘（着色器里 aFace=1 的点每帧跟着摄像机转） */
+function addSantaFigure(buf) {
+  const start = buf.positions.length / 3;
+  santaArt((x, y, size, tint, bright) => pushPoint(buf, x, y, 0, size, tint, bright));
+  for (let i = start; i < buf.positions.length / 3; i++) buf.face[i] = 1;
+
+  // 放大一点：按真实比例画出来，他在画面里只有 70px，"圣诞老人"这件事就看不清
+  const SCALE = 1.3;
+  for (let i = start; i < buf.positions.length / 3; i++) {
     buf.positions[i * 3] *= SCALE;
     buf.positions[i * 3 + 1] = 0.1 + (buf.positions[i * 3 + 1] - 0.1) * SCALE;
     buf.positions[i * 3 + 2] *= SCALE;
   }
 }
 
+// 调试用：?solo=santa 只画车里的人，方便单独检查他的造型
+const SOLO_SANTA = new URLSearchParams(location.search).get('solo') === 'santa';
+
 function buildRigGeometry() {
   const buf = makeBuffers();
 
-  addSleighBody(buf);
+  if (!SOLO_SANTA) addSleighBody(buf);
   addSantaFigure(buf);
   // 两只鹿错开相位，不然像一起抽筋
   const DEER = [
     { ox: 2.05, oy: 0.12, s: 1.15, phase: 0 },
     { ox: 3.55, oy: 0.06, s: 1.06, phase: 2.1 },
   ];
-  for (const d of DEER) addDeer(buf, d.ox, d.oy, d.s, d.phase);
+  if (!SOLO_SANTA) for (const d of DEER) addDeer(buf, d.ox, d.oy, d.s, d.phase);
 
   // 缰绳：从车头拉到驯鹿脖子。锚点跟着鹿的缩放走，不然鹿一大就脱开了
   const neck = (d) => [d.ox + 0.36 * d.s, d.oy + 0.08 * d.s];
   for (const side of [-1, 1]) {
+    if (SOLO_SANTA) break;
     const z = side * 0.26;
     stroke(buf, 1.05, 0.16, neck(DEER[0])[0], neck(DEER[0])[1], z, 14, 1.0, 0.85);
     stroke(buf, DEER[0].ox - 0.42 * DEER[0].s, 0.16, neck(DEER[1])[0], neck(DEER[1])[1], z, 18, 1.0, 0.85);
@@ -565,6 +599,7 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
       uPixelRatio: { value: pixelRatio },
       uOpacity: { value: opacity },
       uTime: { value: 0 },
+      uFace: { value: 0 },
       uCool: { value: new THREE.Color(0xb03a30) },
       uWarm: { value: new THREE.Color(0xffcf7a) },
     },
@@ -572,6 +607,7 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
       uniform float uPixelRatio;
       uniform float uOpacity;
       uniform float uTime;
+      uniform float uFace;
 
       attribute float aSize;
       attribute float aTint;
@@ -583,6 +619,8 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
       attribute float aPhase;
       attribute vec2 aOrigin;
       attribute float aBright;
+      attribute vec3 aNormal;
+      attribute float aFace;
 
       varying float vTint;
       varying float vAlpha;
@@ -598,6 +636,14 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
 
       void main() {
         vec3 p = position;
+
+        // 车里的人：绕自己的竖轴转到正对镜头。整组雪橇会跟着路径转，
+        // 不转回来的话，人转到侧面就成了一条线
+        if (aFace > 0.5) {
+          float cf = cos(uFace);
+          float sf = sin(uFace);
+          p = vec3(p.x * cf + p.z * sf, p.y, -p.x * sf + p.z * cf);
+        }
 
         // 驯鹿跑起来：四腿两步。整根雪橇被 faceForward 转过 90°，
         // 侧影落在 (z, y) 平面上，所以关节也在这个平面里转。
@@ -629,8 +675,16 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
         float twinkle = 0.78 + 0.22 * sin(uTime * 5.0 + position.x * 7.0 + position.y * 4.0);
         gl_PointSize = aSize * uPixelRatio * twinkle * (34.0 / max(1.0, -mv.z));
 
+        // 实体点只留朝向镜头的那半边。没有这一步，加法混合会把球的
+        // 前后两层叠在一起，正对镜头时整片糊成白光
+        float cull = 1.0;
+        if (dot(aNormal, aNormal) > 0.0001) {
+          vec3 n = normalize((modelViewMatrix * vec4(aNormal, 0.0)).xyz);
+          cull = smoothstep(0.12, -0.1, dot(n, normalize(mv.xyz)));
+        }
+
         vTint = aTint;
-        vAlpha = uOpacity * aBright;
+        vAlpha = uOpacity * aBright * cull;
       }
     `,
     fragmentShader: /* glsl */ `
@@ -660,6 +714,7 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
   group.rotation.order = 'YXZ';
 
   const glowTexture = createGlowTexture(128);
+  const faceTmp = new THREE.Vector3();
 
   /* ---------------- 路径采样 ---------------- */
 
@@ -988,6 +1043,16 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
 
       updateTrail(local);
       updatePhotos(local, time);
+    },
+
+    /** 让车里的立绘正对镜头。每帧在 update 之后调一次 */
+    faceCamera(camera) {
+      if (!running) return;
+      faceTmp.copy(camera.position);
+      group.worldToLocal(faceTmp);
+      // 立绘本来在 XY 平面，但整组的 faceForward 把它转到了 ZY 平面，
+      // 法线是 +x，所以要让 +x 指向摄像机：u = atan2(-z, x)
+      rigMaterial.uniforms.uFace.value = Math.atan2(-faceTmp.z, faceTmp.x);
     },
 
     setPixelRatio(value) {

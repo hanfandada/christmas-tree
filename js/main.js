@@ -1070,6 +1070,7 @@ function animate() {
   bursts.update(dt);
   photoOrnaments.update(elapsed, dt, camera.position, ornamentReveal);
   santa.update(elapsed, dt);
+  santa.faceCamera(camera);
   compose.update(elapsed, dt, camera);
   heart3d.update(elapsed, dt, camera);
   gestureFx.update(elapsed, dt);
