@@ -44,13 +44,29 @@ const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) 
  * ------------------------------------------------------------------ */
 
 function makeBuffers() {
-  return { positions: [], sizes: [], tints: [] };
+  return {
+    positions: [],
+    sizes: [],
+    tints: [],
+    // 驯鹿要动起来，所以每个点额外记三件事：
+    //   deerMask 是不是鹿身上的点（跟着一起颠）
+    //   legT     如果长在腿上，从髋部量起的相对位置（0 = 不动）
+    //   hips     那条腿的髋部（顶点着色器里绕它旋转）
+    deerMask: [],
+    legT: [],
+    hips: [],
+    phase: [],
+  };
 }
 
 function pushPoint(buf, x, y, z, size, tint) {
   buf.positions.push(x, y, z);
   buf.sizes.push(size);
   buf.tints.push(tint);
+  buf.deerMask.push(0);
+  buf.legT.push(0);
+  buf.hips.push(0, 0);
+  buf.phase.push(0);
 }
 
 /** 一条抖动的线段：线稿的基本单位 */
@@ -99,6 +115,10 @@ function buildPoints(buf) {
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(buf.positions, 3));
   geometry.setAttribute('aSize', new THREE.Float32BufferAttribute(buf.sizes, 1));
   geometry.setAttribute('aTint', new THREE.Float32BufferAttribute(buf.tints, 1));
+  geometry.setAttribute('aDeer', new THREE.Float32BufferAttribute(buf.deerMask, 1));
+  geometry.setAttribute('aLegT', new THREE.Float32BufferAttribute(buf.legT, 1));
+  geometry.setAttribute('aHip', new THREE.Float32BufferAttribute(buf.hips, 2));
+  geometry.setAttribute('aPhase', new THREE.Float32BufferAttribute(buf.phase, 1));
   return geometry;
 }
 
@@ -219,9 +239,29 @@ function addSleighBody(buf) {
   geometry.dispose();
 }
 
-function addDeer(buf, ox, oy, s) {
+function addDeer(buf, ox, oy, s, phase = 0) {
   const px = (x) => ox + x * s;
   const py = (y) => oy + y * s;
+  const deerStart = buf.positions.length / 3;
+
+  /** 画一条腿，并把线段上的点标记成"可以摆动的腿" */
+  function leg(ax, ay, bx, by) {
+    const start = buf.positions.length / 3;
+    stroke(buf, px(ax), py(ay), px(bx), py(by), 0, 10, 1.9, 0.7);
+    const end = buf.positions.length / 3;
+    const hx = px(ax);
+    const hy = py(ay);
+    const len = Math.hypot(px(bx) - hx, py(by) - hy) || 1;
+    for (let i = start; i < end; i++) {
+      const dx = buf.positions[i * 3] - hx;
+      const dy = buf.positions[i * 3 + 1] - hy;
+      // 髋部不动、蹄子动得最多
+      buf.legT[i] = Math.min(1, Math.hypot(dx, dy) / len);
+      buf.hips[i * 2] = hx;
+      buf.hips[i * 2 + 1] = hy;
+      buf.phase[i] = phase;
+    }
+  }
 
   // 身体：先填一层暗一点的点，再勾一圈亮轮廓，远处才不是个空圆圈
   for (let i = 0; i < 46; i++) {
@@ -249,14 +289,21 @@ function addDeer(buf, ox, oy, s) {
   stroke(buf, px(0.55), py(0.58), px(0.44), py(0.78), 0, 7, 1.6, 1);
   stroke(buf, px(0.48), py(0.71), px(0.39), py(0.74), 0, 4, 1.5, 1);
 
-  // 腿
-  stroke(buf, px(-0.24), py(-0.16), px(-0.31), py(-0.64), 0, 10, 1.9, 0.7);
-  stroke(buf, px(0.18), py(-0.16), px(0.25), py(-0.64), 0, 10, 1.9, 0.7);
+  // 腿：前腿和后腿反相摆动，跑起来才有"跑"的样子
+  leg(-0.24, -0.16, -0.31, -0.64);
+  leg(0.18, -0.16, 0.25, -0.64);
   // 尾巴
   stroke(buf, px(-0.42), py(0.06), px(-0.55), py(-0.02), 0, 5, 1.6, 0.7);
 
   pushPoint(buf, px(0.61), py(0.5), 0, 3.6, 1); // 眼睛
   pushPoint(buf, px(0.42), py(0.3), 0, 4.0, 1); // 铃铛
+
+  // 整只鹿跟着一起上下颠
+  const end = buf.positions.length / 3;
+  for (let i = deerStart; i < end; i++) {
+    buf.deerMask[i] = 1;
+    buf.phase[i] = phase;
+  }
 }
 
 /** 坐在车里的人：有个人形轮廓，远远一看就知道是圣诞老人 */
@@ -285,8 +332,9 @@ function buildRigGeometry() {
 
   addSleighBody(buf);
   addSantaFigure(buf);
-  addDeer(buf, 2.05, 0.12, 1.0);
-  addDeer(buf, 3.55, 0.06, 0.94);
+  // 两只鹿错开相位，不然像一起抽筋
+  addDeer(buf, 2.05, 0.12, 1.0, 0);
+  addDeer(buf, 3.55, 0.06, 0.94, 2.1);
 
   // 缰绳：从车头拉到驯鹿脖子
   const deer = [2.05, 3.55];
@@ -323,12 +371,35 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
 
       attribute float aSize;
       attribute float aTint;
+      attribute float aDeer;
+      attribute float aLegT;
+      attribute vec2 aHip;
+      attribute float aPhase;
 
       varying float vTint;
       varying float vAlpha;
 
       void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vec3 p = position;
+
+        // 驯鹿跑起来：腿绕髋部摆动。整根雪橇被 faceForward 转过 90°，
+        // 侧影落在 (z, y) 平面上，所以旋转也在这个平面里做
+        const float GAIT = 6.2;
+        if (aLegT > 0.001) {
+          float ang = sin(uTime * GAIT + aPhase) * 0.5 * aLegT;
+          float c = cos(ang);
+          float sn = sin(ang);
+          vec2 d = vec2(p.z - aHip.x, p.y - aHip.y);
+          p.z = aHip.x + d.x * c - d.y * sn;
+          p.y = aHip.y + d.x * sn + d.y * c;
+        }
+        // 身子跟着颠一下，幅度很小，但"呆不呆"就差这一点
+        if (aDeer > 0.5) {
+          p.y += sin(uTime * GAIT + aPhase) * 0.05;
+          p.z += cos(uTime * GAIT + aPhase) * 0.02;
+        }
+
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mv;
 
         float twinkle = 0.78 + 0.22 * sin(uTime * 5.0 + position.x * 7.0 + position.y * 4.0);
