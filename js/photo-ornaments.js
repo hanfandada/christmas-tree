@@ -850,6 +850,21 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
       if (open && item.openTarget !== 1) spawnRing(item);
       item.openTarget = open ? 1 : 0;
     },
+    /** 让一个随机盒子闪一下（照片存进来时的回执） */
+    flashRandom() {
+      if (!order.length) return;
+      const item = items.get(order[(Math.random() * order.length) | 0]);
+      if (!item) return;
+      item.flashTime = 0;
+      item.flash = 1;
+    },
+    /** 随便一个盒子的世界坐标（照片落到树上时用） */
+    getRandomPosition() {
+      if (!order.length) return null;
+      const id = order[(Math.random() * order.length) | 0];
+      const item = items.get(id);
+      return item ? item.group.getWorldPosition(new THREE.Vector3()) : null;
+    },
     getPosition(id) {
       const item = items.get(id);
       return item ? item.group.getWorldPosition(new THREE.Vector3()) : null;
@@ -872,7 +887,7 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
     getArcCount() {
       return arcs.filter((a) => a.a).length;
     },
-    /** 树上照片的 id，按挂上树的先后顺序 */
+    /** 所有礼物盒的 id，按挂上树的先后顺序 */
     getIds() {
       return [...order];
     },

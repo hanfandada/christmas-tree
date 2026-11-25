@@ -23,7 +23,6 @@ import { createCompose } from './compose.js';
 import { createHeart3D } from './heart3d.js';
 import { createMusic, renderPreview } from './audio.js';
 import {
-  blobToAverageColor,
   fileToPhotoBlob,
   listPhotos,
   removePhoto,
@@ -296,8 +295,8 @@ canvas.addEventListener('pointerup', (event) => {
       }
       photoOrnaments.setHover(null);
       canvas.classList.remove('is-pointing');
-      // 先让盒盖弹开一点，照片再飞出来
-      window.setTimeout(() => openViewer(hitId, rect), 380);
+      // 先让盒盖弹开一点，里面的东西再飞出来
+      window.setTimeout(() => openViewer(pickRandomPhoto(), rect, hitId), 380);
     } else {
       const worldPoint = new THREE.Vector3(ndc.x, ndc.y, 0.5).unproject(camera);
       const direction = worldPoint.sub(camera.position).normalize();
@@ -330,10 +329,16 @@ function showToast(text) {
   toastTimer = setTimeout(() => toastEl.classList.remove('is-visible'), 2600);
 }
 
-async function openViewer(id, origin = null) {
-  const isCard = isDefaultGift(id);
-  const row = photoRows.get(id);
-  if (!isCard && !row) return;
+/**
+ * 拆礼物：所有礼物盒长得一样，打开什么由"有没有照片"决定——
+ * 有照片就随机挑一张，一张都没有就是祝福卡。
+ * @param {string|null} photoId 要展示的照片 id（null = 祝福卡）
+ * @param {{x:number,y:number,size:number}|null} origin 起飞位置
+ * @param {string|null} giftId 哪个盒子被拆了（关的时候要把它盖上）
+ */
+async function openViewer(photoId, origin = null, giftId = null) {
+  const row = photoId ? photoRows.get(photoId) : null;
+  const isCard = !row;
 
   if (viewerUrl) {
     URL.revokeObjectURL(viewerUrl);
@@ -345,8 +350,10 @@ async function openViewer(id, origin = null) {
     viewerUrl = URL.createObjectURL(row.blob);
     viewerImage.src = viewerUrl;
   }
+  if (!isCard) lastShownPhoto = photoId;
   viewerEl.hidden = false;
-  viewerEl.dataset.photoId = id;
+  viewerEl.dataset.photoId = isCard ? '' : photoId;
+  if (giftId) viewerEl.dataset.giftId = giftId;
   // 祝福卡不是照片，没有"删除"这一说
   if (viewerDeleteBtn) viewerDeleteBtn.hidden = isCard;
   controls.autoRotate = false;
@@ -359,7 +366,7 @@ async function openViewer(id, origin = null) {
   }
 
   // 解码期间用户可能已经关掉了
-  if (viewerEl.hidden || viewerEl.dataset.photoId !== id) return;
+  if (viewerEl.hidden || viewerEl.dataset.giftId !== (giftId || '')) return;
 
   requestAnimationFrame(() => {
     viewerEl.classList.add('is-open');
@@ -388,8 +395,9 @@ async function openViewer(id, origin = null) {
 
 function closeViewer() {
   if (!viewerEl) return;
-  const openId = viewerEl.dataset.photoId;
-  if (openId) photoOrnaments.setOpen(openId, false);
+  const openGift = viewerEl.dataset.giftId;
+  if (openGift) photoOrnaments.setOpen(openGift, false);
+  viewerEl.dataset.giftId = '';
   viewerEl.classList.remove('is-open');
   viewerEl.hidden = true;
   viewerEl.dataset.photoId = '';
@@ -447,14 +455,25 @@ function framePhoto(bitmap) {
   return canvas;
 }
 
-/** 树上确实有原始数据的照片（顺序 = 挂上树的先后） */
-function photosOnTree() {
-  return photoOrnaments.getIds().filter((id) => photoRows.has(id));
+/** 所有存着的照片（顺序 = 存进来的先后）。礼物盒和照片不再一一绑定 */
+function photoList() {
+  return [...photoRows.keys()];
+}
+
+let lastShownPhoto = null;
+
+/** 拆礼物时随机挑一张照片；只有一张就一直给那一张，多于一张不连着重复 */
+function pickRandomPhoto() {
+  const ids = photoList();
+  if (!ids.length) return null;
+  if (ids.length === 1) return ids[0];
+  const pool = ids.filter((id) => id !== lastShownPhoto);
+  return pool[(Math.random() * pool.length) | 0];
 }
 
 /** 把树上最近挂的几张照片画成带金框的贴图卡片（雪橇过场和组合技共用） */
 async function buildPhotoCards(limit) {
-  const ids = photosOnTree().slice(-limit);
+  const ids = photoList().slice(-limit);
   const cards = [];
   for (const id of ids) {
     const row = photoRows.get(id);
@@ -473,7 +492,8 @@ async function buildPhotoCards(limit) {
         texture,
         canvas,
         aspect: canvas.width / Math.max(1, canvas.height),
-        target: photoOrnaments.getPosition(id),
+        // 照片不再挂死在某个盒子上，落到树上随便一个盒子的位置
+        target: photoOrnaments.getRandomPosition(),
       });
     } catch (error) {
       console.warn('有一张照片没能用上', error);
@@ -504,23 +524,18 @@ async function playSanta({ force = false } = {}) {
 
 async function addPhotoFromFile(file) {
   if (!file.type.startsWith('image/')) return;
-  if (photoOrnaments.count >= photoOrnaments.max) {
-    showToast(`树上最多挂 ${photoOrnaments.max} 张照片`);
+  if (photoRows.size >= photoOrnaments.max) {
+    showToast(`最多存 ${photoOrnaments.max} 张照片`);
     return;
   }
 
   try {
     const photo = await fileToPhotoBlob(file);
     const row = await savePhoto(photo);
-    const color = await blobToAverageColor(photo);
     photoRows.set(row.id, row);
-    photoOrnaments.add(row.id, color, {
-      spawnFrom: camera.position.clone(),
-      animate: !reducedMotion,
-      // 新挂上去的才庆祝一下，刷新恢复的照片不闪
-      celebrate: true,
-    });
-    syncDefaultGifts();
+    // 照片不再挂死在某个盒子上，所以这里只让一个随机盒子闪一下当作回执
+    photoOrnaments.flashRandom();
+    showToast(`照片已放进礼物（共 ${photoRows.size} 张）`);
   } catch (error) {
     console.error(error);
     showToast('这张照片没能挂上去，换一张试试');
@@ -532,8 +547,6 @@ async function hydratePhotos() {
     const rows = await listPhotos();
     for (const row of rows) {
       photoRows.set(row.id, row);
-      const color = await blobToAverageColor(row.blob);
-      photoOrnaments.add(row.id, color, { animate: false });
     }
     if (rows.length) showToast(`树上有 ${rows.length} 张照片`);
     syncDefaultGifts();
@@ -544,16 +557,16 @@ async function hydratePhotos() {
 
 /* ---------------- 常驻礼物盒 ---------------- */
 
-// 树是 3D 的、还会转，所以礼物盒要保持一个固定数量绕在锥面上；
-// 没挂照片的盒子点开是一张祝福卡，挂了照片的盒子点开就是照片
+// 树是 3D 的、还会转，所以礼物盒要保持固定数量绕在锥面上。
+// 盒子不绑定照片：拆开时随机抽一张照片，一张都没有就是祝福卡
 const DEFAULT_GIFTS = 24;
 const GIFT_COLORS = [0xd93a4a, 0xe8a33d, 0x3f7fd6, 0x2fa87a, 0xf06292];
 
 const isDefaultGift = (id) => typeof id === 'string' && id.startsWith('gift-');
 
 function syncDefaultGifts() {
-  const photos = photoOrnaments.getIds().filter((id) => photoRows.has(id)).length;
-  const want = Math.max(0, DEFAULT_GIFTS - photos);
+  // 盒子数量固定，跟照片多少无关：每拆一个都是"随机一张照片 / 祝福卡"
+  const want = DEFAULT_GIFTS;
   const alive = photoOrnaments.getIds().filter(isDefaultGift);
 
   for (let i = alive.length; i < want; i++) {
@@ -569,6 +582,8 @@ function syncDefaultGifts() {
 }
 
 /* ---------------- 默认祝福卡 ---------------- */
+
+syncDefaultGifts();
 
 let defaultCardUrl = null;
 
@@ -743,9 +758,8 @@ viewerDeleteBtn?.addEventListener('click', async () => {
   closeViewer();
   await removePhoto(id);
   photoRows.delete(id);
-  photoOrnaments.remove(id);
-  syncDefaultGifts();
-  showToast('已经从树上取下来了');
+  if (lastShownPhoto === id) lastShownPhoto = null;
+  showToast('已经从礼物里取出来了');
 });
 
 window.addEventListener('keydown', (event) => {
