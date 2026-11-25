@@ -315,6 +315,7 @@ const photoRows = new Map();
 const raycaster = new THREE.Raycaster();
 const viewerEl = document.getElementById('viewer');
 const viewerImage = document.getElementById('viewer-image');
+const viewerDeleteBtn = document.getElementById('viewer-delete');
 const viewerBackdropEl = viewerEl?.querySelector('[data-close]');
 const toastEl = document.getElementById('toast');
 
@@ -330,13 +331,24 @@ function showToast(text) {
 }
 
 async function openViewer(id, origin = null) {
+  const isCard = isDefaultGift(id);
   const row = photoRows.get(id);
-  if (!row) return;
-  if (viewerUrl) URL.revokeObjectURL(viewerUrl);
-  viewerUrl = URL.createObjectURL(row.blob);
-  viewerImage.src = viewerUrl;
+  if (!isCard && !row) return;
+
+  if (viewerUrl) {
+    URL.revokeObjectURL(viewerUrl);
+    viewerUrl = null;
+  }
+  if (isCard) {
+    viewerImage.src = defaultCardDataUrl();
+  } else {
+    viewerUrl = URL.createObjectURL(row.blob);
+    viewerImage.src = viewerUrl;
+  }
   viewerEl.hidden = false;
   viewerEl.dataset.photoId = id;
+  // 祝福卡不是照片，没有"删除"这一说
+  if (viewerDeleteBtn) viewerDeleteBtn.hidden = isCard;
   controls.autoRotate = false;
 
   // 照片按原比例显示，加载完成前尺寸是 0，先解码再量尺寸，飞出动画才不会算错
@@ -382,6 +394,7 @@ function closeViewer() {
   viewerEl.hidden = true;
   viewerEl.dataset.photoId = '';
   viewerImage.removeAttribute('src');
+  if (viewerDeleteBtn) viewerDeleteBtn.hidden = false;
   if (viewerUrl) {
     URL.revokeObjectURL(viewerUrl);
     viewerUrl = null;
@@ -507,6 +520,7 @@ async function addPhotoFromFile(file) {
       // 新挂上去的才庆祝一下，刷新恢复的照片不闪
       celebrate: true,
     });
+    syncDefaultGifts();
   } catch (error) {
     console.error(error);
     showToast('这张照片没能挂上去，换一张试试');
@@ -522,9 +536,107 @@ async function hydratePhotos() {
       photoOrnaments.add(row.id, color, { animate: false });
     }
     if (rows.length) showToast(`树上有 ${rows.length} 张照片`);
+    syncDefaultGifts();
   } catch (error) {
     console.error(error);
   }
+}
+
+/* ---------------- 常驻礼物盒 ---------------- */
+
+// 树是 3D 的、还会转，所以礼物盒要保持一个固定数量绕在锥面上；
+// 没挂照片的盒子点开是一张祝福卡，挂了照片的盒子点开就是照片
+const DEFAULT_GIFTS = 24;
+const GIFT_COLORS = [0xd93a4a, 0xe8a33d, 0x3f7fd6, 0x2fa87a, 0xf06292];
+
+const isDefaultGift = (id) => typeof id === 'string' && id.startsWith('gift-');
+
+function syncDefaultGifts() {
+  const photos = photoOrnaments.getIds().filter((id) => photoRows.has(id)).length;
+  const want = Math.max(0, DEFAULT_GIFTS - photos);
+  const alive = photoOrnaments.getIds().filter(isDefaultGift);
+
+  for (let i = alive.length; i < want; i++) {
+    photoOrnaments.add(
+      `gift-${i}`,
+      new THREE.Color(GIFT_COLORS[i % GIFT_COLORS.length]),
+      { animate: false }
+    );
+  }
+  for (let i = alive.length - 1; i >= want; i--) {
+    photoOrnaments.remove(alive[i]);
+  }
+}
+
+/* ---------------- 默认祝福卡 ---------------- */
+
+let defaultCardUrl = null;
+
+/** 没有照片的礼盒拆开是一张卡：深蓝底 + 金框 + 衬线字，不用图片资源 */
+function defaultCardDataUrl() {
+  if (defaultCardUrl) return defaultCardUrl;
+
+  const w = 900;
+  const h = 1200;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+
+  const bg = ctx.createLinearGradient(0, 0, 0, h);
+  bg.addColorStop(0, '#16283c');
+  bg.addColorStop(0.55, '#0b1522');
+  bg.addColorStop(1, '#05090f');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, w, h);
+
+  // 星点
+  for (let i = 0; i < 140; i++) {
+    const r = Math.random() * 1.6 + 0.4;
+    ctx.globalAlpha = 0.15 + Math.random() * 0.55;
+    ctx.fillStyle = Math.random() < 0.3 ? '#ffd9a0' : '#dfeaff';
+    ctx.beginPath();
+    ctx.arc(Math.random() * w, Math.random() * h * 0.9, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // 金色内框
+  ctx.strokeStyle = 'rgba(232, 190, 122, 0.55)';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(46, 46, w - 92, h - 92);
+  ctx.strokeStyle = 'rgba(232, 190, 122, 0.2)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(62, 62, w - 124, h - 124);
+
+  const serif = '"Optima", "Palatino Linotype", Palatino, Georgia, serif';
+  ctx.textAlign = 'center';
+
+  const name = (query.get('to') || '').trim();
+  if (name) {
+    ctx.fillStyle = 'rgba(240, 201, 135, 0.85)';
+    ctx.font = `italic 56px ${serif}`;
+    ctx.fillText(`To ${name}`, w / 2, h * 0.34);
+  }
+
+  ctx.fillStyle = '#fff3dd';
+  ctx.font = `94px ${serif}`;
+  ctx.fillText('Merry', w / 2, h * 0.48);
+  ctx.fillText('Christmas', w / 2, h * 0.585);
+
+  ctx.strokeStyle = 'rgba(232, 190, 122, 0.6)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(w / 2 - 90, h * 0.64);
+  ctx.lineTo(w / 2 + 90, h * 0.64);
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(255, 226, 180, 0.72)';
+  ctx.font = `italic 30px ${serif}`;
+  ctx.fillText('a gift for you', w / 2, h * 0.7);
+
+  defaultCardUrl = canvas.toDataURL('image/png');
+  return defaultCardUrl;
 }
 
 /* ---------------- 组合技：粒子炸开 → 拼成 Merry Christmas ---------------- */
@@ -625,13 +737,14 @@ window.addEventListener('drop', async (event) => {
 document.getElementById('viewer-close')?.addEventListener('click', closeViewer);
 viewerEl?.querySelector('[data-close]')?.addEventListener('click', closeViewer);
 
-document.getElementById('viewer-delete')?.addEventListener('click', async () => {
+viewerDeleteBtn?.addEventListener('click', async () => {
   const id = viewerEl?.dataset.photoId;
-  if (!id) return;
+  if (!id || isDefaultGift(id)) return;
   closeViewer();
   await removePhoto(id);
   photoRows.delete(id);
   photoOrnaments.remove(id);
+  syncDefaultGifts();
   showToast('已经从树上取下来了');
 });
 

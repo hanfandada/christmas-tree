@@ -490,6 +490,11 @@ body.is-dragging .dropzone {
   transform: none;
 }
 
+/* 祝福卡不是照片，没有"删除"这一说；.btn 自带 display，要显式盖掉 */
+.viewer__actions .btn[hidden] {
+  display: none;
+}
+
 @keyframes cardIn {
   from {
     opacity: 0;

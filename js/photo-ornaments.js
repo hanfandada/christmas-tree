@@ -486,7 +486,8 @@ export function createPhotoOrnaments(world, { onSparkle } = {}) {
   }
 
   function sizeFor(total) {
-    return THREE.MathUtils.clamp(0.62 * Math.pow(6 / Math.max(total, 1), 0.14), 0.38, 0.62);
+    // 礼物多了要明显缩小：24 个盒子按原来的曲线缩得不够，会把整棵树糊满
+    return THREE.MathUtils.clamp(0.62 * Math.pow(6 / Math.max(total, 1), 0.38), 0.2, 0.62);
   }
 
   function reflow() {
