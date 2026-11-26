@@ -247,13 +247,15 @@ function addSleighBody(buf) {
   geometry.translate(0, 0, -depth / 2);
 
   // 车身：偏冷的暗色点，撑出体积；密度必须克制，不然轮廓会被糊掉
-  sampleSurface(geometry, 900, buf, 1.25, 0.45);
+  // 整组放大后点的尺寸也跟着放大了（uGain），车身这里不能再加点，
+  // 不然挤成一团发光的金块；轮廓那边加点才划算
+  sampleSurface(geometry, 900, buf, 1.0, 0.4);
 
   // 两侧轮廓：更亮更密的金色点，远处也认得出来是雪橇
   // 按弧长均匀取点。getPoints 是按曲线参数取的，圆弧段会挤上一大堆点、
   // 直线段几乎没点，于是车头车尾亮成两个白月牙、车厢里一片黑，
   // 坐在车里的人就被那两团光吃掉了
-  const outline = shape.getSpacedPoints(170);
+  const outline = shape.getSpacedPoints(250);
   for (const side of [-1, 1]) {
     const z = (side * depth) / 2;
     for (const p of outline) {
@@ -465,6 +467,7 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
       uPixelRatio: { value: pixelRatio },
       uOpacity: { value: opacity },
       uTime: { value: 0 },
+      uGain: { value: RIG_SCALE / RIG_BASE_SCALE },
       uCool: { value: new THREE.Color(0xb03a30) },
       uWarm: { value: new THREE.Color(0xffcf7a) },
     },
@@ -472,6 +475,7 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
       uniform float uPixelRatio;
       uniform float uOpacity;
       uniform float uTime;
+      uniform float uGain;
 
       attribute float aSize;
       attribute float aTint;
@@ -529,7 +533,7 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
         gl_Position = projectionMatrix * mv;
 
         float twinkle = 0.78 + 0.22 * sin(uTime * 5.0 + position.x * 7.0 + position.y * 4.0);
-        gl_PointSize = aSize * uPixelRatio * twinkle * (34.0 / max(1.0, -mv.z));
+        gl_PointSize = aSize * uGain * uPixelRatio * twinkle * (34.0 / max(1.0, -mv.z));
 
         // 实体点只留朝向镜头的那半边。没有这一步，加法混合会把球的
         // 前后两层叠在一起，正对镜头时整片糊成白光
@@ -560,6 +564,11 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
   });
 }
 
+// 整组雪橇的缩放。点的像素尺寸不会跟着 group.scale 变，所以放大之后
+// 必须同时把点的尺寸按比例调大（uGain），不然线条会立刻变稀
+const RIG_SCALE = 1.75;
+const RIG_BASE_SCALE = 1.3; // 上一版的缩放，用来换算点尺寸的增益
+
 /* ------------------------------------------------------------------ *
  * 车里坐的圣诞老人：3D 模型 → 发光点云
  *
@@ -578,7 +587,7 @@ function makeMaterial({ pixelRatio = 1, opacity = 1 } = {}) {
 const SANTA_GLB = './assets/santa.glb';
 const SANTA_HEIGHT = 1.0; // 模型缩到这么高；雪橇车身高约 0.9
 const SANTA_FOOT_Y = -0.32; // 脚底沉到底板附近，看着像坐在车里
-const SANTA_SAMPLES = 6000; // 采样点；每个点再出两颗（亮芯 + 外晕）
+const SANTA_SAMPLES = 14000; // 采样点；每个点再出两颗（体积点 + 描边点）
 const SANTA_POINTS = SANTA_SAMPLES * 2;
 // 主光方向（物体空间）：镜头怎么转，光都从他左上方来
 const SANTA_LIGHT = new THREE.Vector3(-0.45, 0.72, 0.55).normalize();
@@ -748,6 +757,7 @@ function makeSantaMaterial(pixelRatio) {
       uPixelRatio: { value: pixelRatio },
       uOpacity: { value: 0 },
       uTime: { value: 0 },
+      uGain: { value: 1.12 },
       uLight: { value: SANTA_LIGHT.clone() },
       uRim: { value: new THREE.Color(0xffc888) },
     },
@@ -755,6 +765,7 @@ function makeSantaMaterial(pixelRatio) {
       uniform float uPixelRatio;
       uniform float uOpacity;
       uniform float uTime;
+      uniform float uGain;
       uniform vec3 uLight;
       uniform vec3 uRim;
 
@@ -788,7 +799,7 @@ function makeSantaMaterial(pixelRatio) {
         float rim = pow(1.0 - clamp(-facing, 0.0, 1.0), 3.0);
 
         float twinkle = 0.9 + 0.1 * sin(uTime * 4.4 + p.y * 11.0 + p.x * 7.0);
-        gl_PointSize = aSize * uPixelRatio * twinkle * (30.0 / max(1.0, -mv.z));
+        gl_PointSize = aSize * uGain * uPixelRatio * twinkle * (30.0 / max(1.0, -mv.z));
 
         // 面是暗的底，线是亮的光
         vec3 body = aColor * shade * 0.52;
@@ -876,7 +887,7 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
 
   // 整体放大一点：跟 9 单位的树比，原尺寸在画面里太小，看不清是雪橇
   const rigGroup = new THREE.Group();
-  rigGroup.scale.setScalar(1.3);
+  rigGroup.scale.setScalar(RIG_SCALE);
   group.add(rigGroup);
 
   // 车里的人：真模型表面撒点成的一片星光，每个点带自己的颜色和法线
@@ -1216,6 +1227,12 @@ export function createSanta({ onFinish, onPhotoLand } = {}) {
     /** 横向压缩系数：横竖屏切换时由外部按画面宽度算好传进来 */
     setHorizontalScale(value) {
       horizontal = Math.min(1, Math.max(0.35, value));
+      // 竖屏时路径被压扁到三成多，整组雪橇要是还保持原尺寸就会顶出画外，
+      // 所以车也跟着缩一档；点的尺寸按缩放同比调，视觉密度才不变
+      const fit = 0.55 + 0.45 * horizontal;
+      const scale = RIG_SCALE * fit;
+      rigGroup.scale.setScalar(scale);
+      rigMaterial.uniforms.uGain.value = scale / RIG_BASE_SCALE;
     },
 
     get active() {
