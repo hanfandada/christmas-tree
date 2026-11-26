@@ -1,12 +1,17 @@
 /**
- * 摄像头手势：🤟 我爱你 / 竖大拇指 / 握拳→张开。
+ * 摄像头手势：🤟 我爱你 / 竖大拇指 / 握拳→张开→（捏合 / 再握拳）。
  *
  * 三类手势分两套逻辑：
  *  - 我爱你、大拇指：姿势保持 HOLD_MS 就触发，属于"摆出来就出"
  *  - 握拳→张开：序列手势，要先把拳头稳住 PALM_HOLD_MS，再张开才算完成，
  *    这样单纯挥手、打字、张开手掌都不会误触
- *  - 组合技：握拳 → 张开 → 再握拳，全程只有"拳"和"掌"两种状态。
- *    收尾原本是"拇指食指捏合"，但那个手型和比心几乎重合，真机上分不开，弃用
+ *  - 组合技：前两段（握拳 → 张开）共用，第三段分成两条岔路：
+ *      · 捏合（拇指和食指指尖合上）= 看照片，捏一次换一张，手放下才散场
+ *      · 再握一拳            = 粒子拼成 Merry Christmas
+ *    两条岔路靠"第三段的手型"区分，互不干扰。
+ *    捏合原本在第二版就被弃用（和比心太像），但那时是拿它当**收尾**、
+ *    在一堆手型里独立判定；现在它只在"组合技已经走到 mixed"之后才判，
+ *    而且要求中指/无名指/小指还伸着，和握拳、比心都能分开。
  *
  * 设计约束：
  *  - 模型与 wasm 全部 vendor 在 vendor/mediapipe/，点按钮时才动态 import，
@@ -38,10 +43,20 @@ const COMBO_GRACE = 900; // 组合技触发后这段时间里屏蔽 🤟，免�
 // 要求连续会被识别抖动打死——只要中间有一帧不成立，计数就归零，永远攒不满
 const FIST_FIRE_HITS = 3;
 const FIST_FIRE_WINDOW = 320;
+// 捏合：一次捏合只出一张照片。判定要连续几帧（比握拳更严，捏合的手型更容易抖），
+// 而且必须"松开过"才重新上膛——不然一直捏着会被当成连拍
+const PINCH_MIN_STREAK = 3;
+const PINCH_COOLDOWN = 420;
 // 多久"既不是拳也不是掌"才算真的把手放下了。
 // 原来按帧数算（10 帧），可是张开→握拳本来就要经过半开状态，
 // 30fps 下 10 帧只有 333ms，60fps 下只有 167ms——正常人的握拳速度直接被判成"走开了"
 const NEUTRAL_GIVEUP_MS = 1500;
+// 看照片的时候，"手晃一下变成半开"不能算离开，否则一张照片都看不完；
+// 只有手真的从画面里消失（或者一直摆着不捏）这么久，才慢慢散回树
+const GALLERY_GIVEUP_MS = 3600;
+// 手整个从画面里消失（不是"摆着不捏"）可以判得快一点：人真的把手放下去了，
+// 等 3.6 秒才散场会觉得卡住了。1.6 秒足够滤掉漏检和短暂出画
+const GALLERY_LOST_MS = 1600;
 
 // 送进模型前先缩到这个宽度：640×480 直接喂太浪费。
 // 256 更省算力，但真机上小图更容易丢手，先用回 320 这个验证过的值。
@@ -82,10 +97,13 @@ export const THRESHOLD = {
   fistThumbTuck: 0.7,
   openCurl: 0.98,
   openThumbOut: 0.4,
+  // 捏合：拇指尖和食指尖的距离（按手掌大小归一化）
   pinchGap: 0.34,
   pinchThumbOut: 0.22,
-  // 捏合时另外三指经常是半弯的，不能要求它们必须伸直
-  pinchCurl: 0.8,
+  // 捏合时中指/无名指/小指必须还基本伸着。
+  // 这条是"捏合 vs 握拳"唯一的可靠分水岭：握拳时这三根的蜷曲比值在 0.6~0.9，
+  // 阈值必须压到它们之上，否则"再握一拳"会被判成捏合，拼字那条路就永远走不到
+  pinchCurl: 0.95,
 };
 
 function dist(a, b) {
@@ -248,8 +266,11 @@ export function nextRoi(bounds, current) {
 }
 
 /**
- * 捏合：拇指指尖和食指指尖碰在一起，其余三指不蜷。
- * 组合技已经不用它了（换成"再握一拳"），留着只是方便以后做别的手势。
+ * 捏合：拇指指尖和食指指尖碰在一起，同时中指/无名指/小指还伸着。
+ *
+ * 用"其余三根伸着"把捏合和握拳分开——握拳时拇指尖也会靠近食指，
+ * 但那三根是蜷着的，`others` 会掉到 0.5 以下。
+ * 组合技里只在 mixed / gallery 阶段才判它，所以也不用担心和 🤟 撞。
  */
 export function analyzePinch(lm) {
   if (!lm || lm.length < 21) return { isPinch: false };
@@ -299,6 +320,8 @@ export function createHandTracker({
   onThumb,
   onPalm,
   onCombo,
+  onPhoto,
+  onLeave,
   onTrack,
   onStatus,
   roi: roiEnabled = true,
@@ -332,16 +355,20 @@ export function createHandTracker({
   let lastFire = -Infinity;
   let armed = true;
 
-  // 序列状态机（握拳 → 张开 → 再握拳）
+  // 序列状态机（握拳 → 张开 → 捏合 / 再握拳）
   let fistStreak = 0;
   let openStreak = 0;
   let fistHits = []; // 最近几次判定为拳的时间戳（窗口内）
   let neutralSince = 0; // 这一轮"既不是拳也不是掌"是从什么时候开始的
-  let palmStage = 'idle'; // idle | fist | mixed
+  let palmStage = 'idle'; // idle | fist | mixed | gallery
   let palmSince = 0;
   let lastPalmFire = -Infinity;
   let lastComboAt = -Infinity;
   let lastPalmLatency = null;
+  // 捏合：pinchArmed 松开才复位，一次捏合只出一张照片
+  let pinchStreak = 0;
+  let pinchArmed = true;
+  let lastPinchFire = -Infinity;
 
   function setStatus(status, error) {
     onStatus?.(status, error);
@@ -534,15 +561,16 @@ export function createHandTracker({
   function resetPalm() {
     fistStreak = 0;
     openStreak = 0;
+    pinchStreak = 0;
     fistHits = [];
     neutralSince = 0;
     palmStage = 'idle';
   }
 
   /**
-   * 组合技序列：握拳 → 张开（炸开）→ 再握拳（成字）。
+   * 组合技序列：握拳 → 张开（炸开）→ 捏合（看照片）/ 再握拳（成字）。
    *
-   * 四个真机上踩到的坑：
+   * 五个真机上踩到的坑：
    *  - 握拳到张开之间会经过几帧"既不是拳也不是完全张开"，不能因为这几帧就作废，
    *    改成给整段一个超时（FIST_TIMEOUT），中间怎么动都行
    *  - 起手只在 idle 时收拳。mixed 阶段里如果也走起手分支，第二拳会被当成
@@ -550,15 +578,23 @@ export function createHandTracker({
    *  - "手放下了"必须按时间算：张开→握拳本来就要经过半开状态，按帧数算会把
    *    正常速度的握拳判成走开，整段作废（这是"第二拳时灵时不灵"的主因）
    *  - 第二拳用窗口计数，要求连续帧太脆，抖一帧就归零
-   * @returns {'open'|'combo'|null} 这一帧完成的那一步
+   *  - 捏合必须"松开才重新上膛"，否则一直捏着 = 一路连拍
+   * @returns {'open'|'combo'|'photo'|'leave'|null} 这一帧完成的那一步
    */
-  function updatePalm(now, fist, open) {
+  function updatePalm(now, fist, open, pinch) {
     fistStreak = fist.isFist ? fistStreak + 1 : 0;
     openStreak = open.isOpen ? openStreak + 1 : 0;
-    neutralSince = !fist.isFist && !open.isOpen ? neutralSince || now : 0;
+    pinchStreak = pinch.isPinch ? pinchStreak + 1 : 0;
+    // 指尖分开就重新上膛：一次捏合只换一张照片
+    if (!pinch.isPinch) pinchArmed = true;
+    neutralSince =
+      !fist.isFist && !open.isOpen && !pinch.isPinch ? neutralSince || now : 0;
 
     if (fist.isFist) fistHits.push(now);
     while (fistHits.length && now - fistHits[0] > FIST_FIRE_WINDOW) fistHits.shift();
+
+    const canPinch =
+      pinchArmed && pinchStreak >= PINCH_MIN_STREAK && now - lastPinchFire >= PINCH_COOLDOWN;
 
     // 起手：只在完全空闲时收第一拳
     if (palmStage === 'idle' && fistStreak >= MIN_STREAK) {
@@ -590,13 +626,36 @@ export function createHandTracker({
       // 手彻底放下（1.5 秒什么姿势都不是）才算走开；中间的半开状态不算
       if (neutralSince && now - neutralSince > NEUTRAL_GIVEUP_MS) {
         palmStage = 'idle';
-        return null;
+        return 'leave';
+      }
+      // 捏合优先于第二拳：捏合时四指多半还伸着，不会同时被判成握拳
+      if (canPinch && now - palmSince >= PALM_HOLD_MS) {
+        pinchArmed = false;
+        lastPinchFire = now;
+        lastComboAt = now;
+        palmStage = 'gallery';
+        return 'photo';
       }
       if (now - palmSince < PALM_HOLD_MS) return null;
       if (fistHits.length >= FIST_FIRE_HITS) {
         lastComboAt = now;
         palmStage = 'idle';
         return 'combo';
+      }
+    }
+
+    if (palmStage === 'gallery') {
+      // 看照片：捏一下换一张
+      if (canPinch) {
+        pinchArmed = false;
+        lastPinchFire = now;
+        lastComboAt = now;
+        return 'photo';
+      }
+      // 这里的超时比 mixed 宽得多：挑照片的时候手会晃、会短暂松成半开
+      if (neutralSince && now - neutralSince > GALLERY_GIVEUP_MS) {
+        palmStage = 'idle';
+        return 'leave';
       }
     }
     return null;
@@ -611,6 +670,22 @@ export function createHandTracker({
       streak = 0;
       releaseStreak += 1;
       if (releaseStreak >= RELEASE_STREAK) armed = true;
+
+      // 组合技进行中丢手太常见（手出画、背光、糊了），不能一丢就收摊：
+      // 记下"从什么时候开始看不见手"，够久才真的判离开
+      if (palmStage === 'mixed' || palmStage === 'gallery') {
+        const giveUp = palmStage === 'mixed' ? NEUTRAL_GIVEUP_MS : GALLERY_LOST_MS;
+        neutralSince = neutralSince || now;
+        if (now - neutralSince > giveUp) {
+          fistHits = [];
+          pinchStreak = 0;
+          neutralSince = 0;
+          palmStage = 'idle';
+          onLeave?.();
+        }
+        return;
+      }
+
       resetPalm();
       return;
     }
@@ -624,16 +699,20 @@ export function createHandTracker({
 
     const pos = palmScreen(lm);
 
-    // ⚠️ 必须在 updatePalm 之前取：捏合触发时它会把 palmStage 改回 idle，
-    // 之后再判断就会把这一帧当成"不在组合技里"，于是捏合同时炸出一颗心
-    const wasInCombo = palmStage === 'mixed';
+    // ⚠️ 必须在 updatePalm 之前取：捏合触发时 palmStage 会变，
+    // 之后再判断就会把这一帧当成"不在组合技里"，于是捏合同一帧炸出一颗心
+    const wasInCombo = palmStage === 'mixed' || palmStage === 'gallery';
 
     // 序列手势独立于下面 🤟 / 大拇指的"保持触发"
-    const comboStep = updatePalm(now, fist, open);
+    const comboStep = updatePalm(now, fist, open, pinch);
     if (comboStep === 'open') {
       onPalm?.({ ...pos, latency: lastPalmLatency });
     } else if (comboStep === 'combo') {
       onCombo?.({ ...pos });
+    } else if (comboStep === 'photo') {
+      onPhoto?.({ ...pos });
+    } else if (comboStep === 'leave') {
+      onLeave?.({ ...pos });
     }
 
     // 组合技期间、以及刚触发完的 0.9 秒内，都不判 🤟 / 大拇指
@@ -677,7 +756,7 @@ export function createHandTracker({
       y: pos.y,
       kind,
       progress: displayProgress,
-      metrics: { love, thumb, fist, open },
+      metrics: { love, thumb, fist, open, pinch },
     });
 
     if (palmKind) return;

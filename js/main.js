@@ -224,6 +224,8 @@ const sceneObjects = [
   trunk.group,
   photoOrnaments.group,
   ground.group,
+  // 光球变强之后会盖住中间的字和照片，拼字 / 看照片时要一起收掉
+  globe.group,
 ];
 // 爱心不放进上面这个列表：它自己会收 visible，被一起置 true 会留下一层残影
 let sceneHidden = false;
@@ -547,6 +549,26 @@ async function buildPhotoCards(limit) {
   return cards;
 }
 
+/**
+ * 一张照片都没有的时候，看照片那条岔路也得有东西可看：拿祝福卡兜底。
+ * （拼字不依赖照片，但"捏合看照片"没照片就什么都出不来）
+ */
+async function buildDefaultCard() {
+  const response = await fetch(defaultCardDataUrl());
+  const bitmap = await createImageBitmap(await response.blob());
+  const canvas = framePhoto(bitmap);
+  if (bitmap.close) bitmap.close();
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return {
+    id: 'default-card',
+    texture,
+    canvas,
+    aspect: canvas.width / Math.max(1, canvas.height),
+    target: photoOrnaments.getRandomPosition(),
+  };
+}
+
 async function playSanta({ force = false } = {}) {
   if (santa.active || santaPending || compose.active) return false;
   if (reducedMotion && !force) return false;
@@ -711,6 +733,7 @@ async function openCompose() {
   santa.stop();
   try {
     const cards = await buildPhotoCards(8);
+    if (!cards.length) cards.push(await buildDefaultCard());
     const photoList = cards.map((card) => ({
       id: card.id,
       texture: card.texture,
@@ -751,6 +774,31 @@ function endCompose() {
   clearTimeout(comboTimer);
   comboTimer = 0;
   compose.close();
+}
+
+/* ---------------- 组合技岔路：捏合 → 一张一张看照片 ---------------- */
+
+function composeToPhoto() {
+  if (!compose.active) return false;
+
+  if (compose.stage === 'gallery') return compose.nextPhoto(elapsed);
+  if (compose.stage !== 'open') return false;
+
+  const ok = compose.enterGallery(elapsed);
+  if (!ok) return false;
+
+  // 进了看照片就不再自动收场：什么时候散回树上，交给"手放下"
+  clearTimeout(comboTimer);
+  comboTimer = 0;
+  showToast('捏一下换一张 · 手放下就散回树上');
+  return true;
+}
+
+/** 手离开：从看照片（或炸开到一半）慢慢散回圣诞树 */
+function scatterCompose() {
+  if (!compose.active) return false;
+  endCompose();
+  return true;
 }
 
 compose.onDone(() => {
@@ -864,6 +912,7 @@ const handTracker = createHandTracker({
         `拇指 out ${m.thumb.thumbOut?.toFixed(2)} rise ${m.thumb.rise?.toFixed(2)} | ` +
         `拳 ${m.fist.maxCurl?.toFixed(2)}/${m.fist.thumbTuck?.toFixed(2)} ` +
         `开 ${m.open.minCurl?.toFixed(2)}/${m.open.thumbOut?.toFixed(2)} | ` +
+        `捏 ${m.pinch.gap?.toFixed(2)}/${m.pinch.others?.toFixed(2)} | ` +
         `推理 ${handTracker.inferAvg}ms · ROI ${Math.round(handTracker.roiSize * 100)}% | ` +
         `延迟 ${handTracker.latency ?? '-'}ms`
       : '手势 -';
@@ -876,6 +925,9 @@ const handTracker = createHandTracker({
   onThumb: ({ x, y }) => gestureFx.burst('thumb', x, y),
   onPalm: () => openCompose(),
   onCombo: () => composeToText(),
+  // 第三段岔路：捏合看照片（再捏换下一张），手放下才散场
+  onPhoto: () => composeToPhoto(),
+  onLeave: () => scatterCompose(),
   onStatus: (status) => {
     const busy = status === 'loading';
     // 加载中也可以再点一次取消
@@ -896,7 +948,7 @@ const handTracker = createHandTracker({
         // 隐私模式存不了，最多下次多等一会儿
       }
       // 拳头比张开的手难检测，先张手让模型锁定，再握起来跟踪才稳
-      showToast('张手让镜头看到你 · 组合技：握拳 → 张开 → 再握拳');
+      showToast('张手让镜头看到你 · 握拳→张开→捏合 看照片 / 再握拳 拼字');
     } else if (gestureMessages[status]) {
       showToast(gestureMessages[status]);
     }
@@ -999,7 +1051,9 @@ if (query.get('debug') === '1') {
     globe,
     openCompose,
     composeToText,
+    composeToPhoto,
     endCompose,
+    scatterCompose,
     scene,
     renderer,
     controls,
@@ -1026,6 +1080,9 @@ function layout() {
   const scale = isPortrait ? 0.78 : aspect < 1.05 ? 0.9 : 1;
   world.scale.setScalar(scale);
   ground.group.scale.setScalar(scale);
+  // 光球挂在 scene 上（不跟 world 转），所以要自己跟一次竖屏缩放，
+  // 否则树缩了球没缩，球底会掉到圆台下面去
+  globe.group.scale.setScalar(scale);
 
   // 雪橇路径横跨 ±6.8，窄屏按画面宽度压扁一点，别飞出画外
   const halfWidth = Math.tan((CAMERA.fov * Math.PI) / 360) * CAMERA.position[2] * aspect;
@@ -1109,7 +1166,8 @@ function animate() {
   platform.setProgress(growRaw);
   platform.update(elapsed);
   globe.setProgress(growRaw);
-  globe.update(elapsed);
+  // 高光要跟着镜头走，所以每秒都得把 camera 递进去
+  globe.update(elapsed, camera);
   shooting.update(dt, camera);
   ribbons.setProgress(growRaw);
   // 丝带的带头压在树的点亮边界上，返回的强度同时用来加亮那一圈树叶

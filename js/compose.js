@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PALETTE, TREE } from './config.js';
+import { createGlowTexture } from './textures.js';
 
 /**
  * 组合技：整棵树的粒子先炸开混成一团，再收拢成一句 "Merry Christmas"。
@@ -18,7 +19,13 @@ const CLOUD_STAGE = 0.36; // uProgress 到这里算"完全炸开"
 const RATE_OPEN = 0.26; // 每秒推进多少（0 → 0.36 约 1.4s）
 const RATE_TEXT = 0.36; // 0.36 → 1 约 1.8s
 const RATE_CLOSE = 0.85; // 1 → 0 约 1.2s
+// 看照片结束时要"慢慢散开"，用比拼字更慢的一档
+const RATE_CLOSE_SLOW = 0.17; // 0.36 → 0 约 2.1s，真的是"慢慢散开"
 const RATE_FAST = 1.6; // 减少动效时用的倍率
+
+// 参考机位（19.8）处的画面世界高度 = 2 * 19.8 * tan(fov/2)，
+// 和 textLayout 用的是同一个数。照片和光框都按这个尺度算，再乘 uTextScale 跟随镜头
+const REF_VIEW_HEIGHT = 15.2;
 
 const PHOTO_BUDGET = 12000; // 照片粒子总上限
 
@@ -153,9 +160,12 @@ const VERTEX = /* glsl */ `
   uniform vec3 uAnchor;
   uniform mat3 uCamRot;
   uniform float uTextScale;
+  uniform float uHalo;
+  uniform float uKick;
 
   attribute vec3 aMix;
   attribute vec3 aText;
+  attribute vec3 aHalo;
   attribute vec3 aColor;
   attribute vec3 aTextColor;
   attribute float aDelay;
@@ -183,16 +193,26 @@ const VERTEX = /* glsl */ `
     vec3 target = uAnchor + uCamRot * (aText * uTextScale);
     p = mix(p, target, local);
 
+    // 看照片：粒子沿照片外沿围成一道光框
+    vec3 haloPos = uAnchor + uCamRot * (aHalo * uTextScale);
+    p = mix(p, haloPos, uHalo);
+    // 换照片的瞬间给一圈径向的抖，光框"重新排布"才有动感
+    p += normalize(haloPos - uAnchor + vec3(0.0001))
+      * sin(uTime * 5.2 + aPhase * 6.283) * uKick * uHalo * 0.7;
+
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
     gl_Position = projectionMatrix * mv;
 
     float twinkle = 0.7 + 0.3 * sin(uTime * 2.4 + aPhase * 9.0);
-    gl_PointSize = aSize * uPixelRatio * (34.0 / max(1.0, -mv.z)) * (1.0 + chaos * 0.3 + local * 0.1) * twinkle;
+    gl_PointSize = aSize * uPixelRatio * (34.0 / max(1.0, -mv.z)) * (1.0 + chaos * 0.3 + local * 0.1 + uHalo * 0.15) * twinkle;
 
     vColor = mix(aColor, aTextColor, local);
+    // 光框统一偏暖金：绕在照片外面的那一圈要像灯光，不像树叶
+    vColor = mix(vColor, vec3(1.0, 0.86, 0.62), uHalo * 0.75);
     // 成字阶段压一档：上万颗加色点叠在笔画上，单个点再亮就糊成一片白，
     // 反而看不清字形。云阶段保持原亮度，只压落位之后的部分
-    vAlpha = uOpacity * mix(1.0, 0.6, local);
+    // 光框那圈粒子比云阶段稀，但挤在一圈上更容易过曝，先压一档
+    vAlpha = uOpacity * mix(1.0, 0.6, local) * mix(1.0, 0.55, uHalo);
   }
 `;
 
@@ -226,6 +246,7 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
   const positions = new Float32Array(TOTAL * 3);
   const mixPositions = new Float32Array(TOTAL * 3);
   const textPositions = new Float32Array(TOTAL * 3);
+  const haloPositions = new Float32Array(TOTAL * 3);
   const colors = new Float32Array(TOTAL * 3);
   const textColors = new Float32Array(TOTAL * 3);
   const delays = new Float32Array(TOTAL);
@@ -236,6 +257,7 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('aMix', new THREE.BufferAttribute(mixPositions, 3));
   geometry.setAttribute('aText', new THREE.BufferAttribute(textPositions, 3));
+  geometry.setAttribute('aHalo', new THREE.BufferAttribute(haloPositions, 3));
   geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
   geometry.setAttribute('aTextColor', new THREE.BufferAttribute(textColors, 3));
   geometry.setAttribute('aDelay', new THREE.BufferAttribute(delays, 1));
@@ -250,6 +272,8 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
     uAnchor: { value: new THREE.Vector3(0, 1.2, 0) },
     uCamRot: { value: new THREE.Matrix3() },
     uTextScale: { value: 1 },
+    uHalo: { value: 0 },
+    uKick: { value: 0 },
   };
 
   const material = new THREE.ShaderMaterial({
@@ -272,6 +296,21 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
   group.add(photoGroup);
   let photos = [];
 
+  // 照片背后铺一层柔光：加色的场景里，照片直接贴在黑底上像一张糊上去的图
+  const photoGlowTexture = createGlowTexture(256);
+  const photoGlowMaterial = new THREE.SpriteMaterial({
+    map: photoGlowTexture,
+    color: 0xffd9a0,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    opacity: 0,
+  });
+  const photoGlow = new THREE.Sprite(photoGlowMaterial);
+  photoGlow.renderOrder = 8;
+  photoGlow.visible = false;
+  photoGroup.add(photoGlow);
+
   function clearPhotos() {
     for (const item of photos) {
       photoGroup.remove(item.sprite);
@@ -285,7 +324,7 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
 
   let active = false;
   let closing = false;
-  let stage = 'idle'; // idle | open | text | closing
+  let stage = 'idle'; // idle | open | text | gallery | closing
   let current = 0;
   let target = 0;
   let startedAt = 0;
@@ -293,6 +332,19 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
   let pixelRatio = 1;
   let photoParticles = 0;
   let onDone = null;
+
+  // 看照片：一次只亮一张，捏一下换下一张
+  let gallery = false;
+  let activePhoto = -1;
+  let photoAt = 0;
+  let photoAlpha = 0;
+  let prevPhoto = -1;
+  let halo = 0;
+  let kick = 0;
+  let frameAspect = 0;
+  let haloBuilt = false;
+  let photoW = 0;
+  let photoH = 0;
 
   const camQ = new THREE.Quaternion();
   const parentQ = new THREE.Quaternion();
@@ -417,6 +469,165 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
     geometry.setDrawRange(0, count + photoParticles);
   }
 
+
+  /* ---------------- 看照片：一次亮一张，捏一下换下一张 ---------------- */
+
+  /**
+   * 照片在相机平面上的尺寸。用统一的"参考机位可视范围"算，
+   * 再乘 uTextScale 跟随镜头，所以拉近拉远都整张入镜。
+   */
+  function photoFit(aspect) {
+    const view = window.innerWidth / Math.max(1, window.innerHeight);
+    const refWidth = REF_VIEW_HEIGHT * Math.max(0.4, view);
+    const maxW = refWidth * 0.76;
+    const maxH = REF_VIEW_HEIGHT * 0.58;
+    let w = maxW;
+    let h = w / Math.max(0.2, aspect);
+    if (h > maxH) {
+      h = maxH;
+      w = h * aspect;
+    }
+    return { w, h };
+  }
+
+  /**
+   * 沿"圆角矩形"周长均匀取点的采样器。
+   *
+   * 第一版直接沿直角矩形的四条边取点，结果四条边被填成了四条发光的横杠——
+   * 又硬又像贴了张边框贴纸。改成圆角 + 沿法线羽化之后，才是"围绕照片的一圈光"。
+   * 也不能用椭圆：椭圆的四个角落在矩形内侧，会把光压在照片角上。
+   */
+  function roundedPerimeter(halfW, halfH) {
+    const r = Math.min(halfW, halfH) * 0.28;
+    const ix = halfW - r;
+    const iy = halfH - r;
+    const quarter = (Math.PI / 2) * r;
+
+    const arc = (cx, cy, start) => (u) => {
+      const a = start + u / r;
+      const nx = Math.cos(a);
+      const ny = Math.sin(a);
+      return { x: cx + nx * r, y: cy + ny * r, nx, ny };
+    };
+
+    const segments = [
+      { len: 2 * ix, at: (u) => ({ x: -ix + u, y: -halfH, nx: 0, ny: -1 }) },
+      { len: quarter, at: arc(ix, -iy, -Math.PI / 2) },
+      { len: 2 * iy, at: (u) => ({ x: halfW, y: -iy + u, nx: 1, ny: 0 }) },
+      { len: quarter, at: arc(ix, iy, 0) },
+      { len: 2 * ix, at: (u) => ({ x: ix - u, y: halfH, nx: 0, ny: 1 }) },
+      { len: quarter, at: arc(-ix, iy, Math.PI / 2) },
+      { len: 2 * iy, at: (u) => ({ x: -halfW, y: iy - u, nx: -1, ny: 0 }) },
+      { len: quarter, at: arc(-ix, -iy, Math.PI) },
+    ];
+
+    const total = segments.reduce((sum, seg) => sum + seg.len, 0);
+    return (f) => {
+      let t = f * total;
+      for (const seg of segments) {
+        if (t <= seg.len) return seg.at(t);
+        t -= seg.len;
+      }
+      return segments[0].at(0);
+    };
+  }
+
+  /**
+   * 光框：55% 贴着照片边缘羽化一圈，45% 散在更外面。
+   * 羽化用 pow(random, 1.8) 而不是均匀分布——越靠近照片越密，往外越来越稀，
+   * 这样才是一层光，而不是一条有厚度的带子。
+   */
+  function buildHalo(halfW, halfH, total) {
+    const arr = haloPositions;
+    const perimeter = roundedPerimeter(halfW, halfH);
+
+    for (let i = 0; i < total; i++) {
+      const ring = Math.random() < 0.55;
+      let x;
+      let y;
+      let z;
+
+      if (ring) {
+        const point = perimeter(Math.random());
+        const out = 0.22 + Math.pow(Math.random(), 1.8) * 0.95;
+        // 沿切线抖一点，边才不会是一条直线
+        const jitter = rand(-0.16, 0.16);
+        x = point.x + point.nx * out - point.ny * jitter;
+        y = point.y + point.ny * out + point.nx * jitter;
+        z = 0.18 * rand(-1, 1);
+      } else {
+        const angle = Math.random() * Math.PI * 2;
+        const spread = 1.15 + Math.pow(Math.random(), 0.6) * 1.45;
+        x = Math.cos(angle) * halfW * spread;
+        y = Math.sin(angle) * halfH * spread;
+        z = 0.9 * rand(-1, 1);
+      }
+
+      arr[i * 3] = x;
+      arr[i * 3 + 1] = y;
+      arr[i * 3 + 2] = z;
+    }
+
+    geometry.attributes.aHalo.needsUpdate = true;
+  }
+
+  function layoutFrame(aspect) {
+    const fit = photoFit(aspect);
+    photoW = fit.w;
+    photoH = fit.h;
+    const changed = Math.abs(aspect - frameAspect) > frameAspect * 0.04;
+    frameAspect = aspect;
+    if (changed || !haloBuilt) {
+      buildHalo(fit.w / 2, fit.h / 2, count + photoParticles);
+      haloBuilt = true;
+    }
+  }
+
+  /** 挑下一张：随机，但不会连着重复同一张 */
+  function pickPhoto() {
+    if (!photos.length) return -1;
+    if (photos.length === 1) return 0;
+    let next = activePhoto;
+    while (next === activePhoto) next = (Math.random() * photos.length) | 0;
+    return next;
+  }
+
+  function showPhoto(timer) {
+    if (!photos.length) return false;
+
+    // 上一张不要直接切断：让它淡出去，和新的错开一个身位
+    if (activePhoto >= 0 && photos[activePhoto]) photos[activePhoto].fade = 1;
+    prevPhoto = activePhoto;
+
+    activePhoto = pickPhoto();
+    if (activePhoto < 0) return false;
+    const item = photos[activePhoto];
+    layoutFrame(item.aspect);
+    photoAt = timer;
+    kick = 1;
+    for (let i = 0; i < photos.length; i++) photos[i].sprite.visible = i === activePhoto;
+    return true;
+  }
+
+  /** 进入看照片：粒子从云里收到照片外沿，亮出第一张 */
+  function enterGallery(timer = 0) {
+    if (!active || gallery || stage !== 'open') return false;
+    if (!photos.length) return false;
+    stage = 'gallery';
+    gallery = true;
+    photoAlpha = 0;
+    haloBuilt = false;
+    prevPhoto = -1;
+    showPhoto(timer);
+    return true;
+  }
+
+  /** 再捏一下：换下一张 */
+  function nextPhoto(timer = 0) {
+    if (!gallery || closing) return false;
+    return showPhoto(timer);
+  }
+
   /* ---------------- 对外 ---------------- */
 
   function open({ treePositions, photoList = [], timer = 0 } = {}) {
@@ -459,6 +670,7 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
         texture: entry.texture,
         colors: pxColors,
         arrived: 0,
+        fade: 0,
       });
     }
 
@@ -467,6 +679,15 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
     active = true;
     closing = false;
     stage = 'open';
+    gallery = false;
+    activePhoto = -1;
+    photoAlpha = 0;
+    halo = 0;
+    kick = 0;
+    frameAspect = 0;
+    haloBuilt = false;
+    uniforms.uHalo.value = 0;
+    uniforms.uKick.value = 0;
     current = reducedMotion ? 0.12 : 0;
     target = CLOUD_STAGE;
     startedAt = timer;
@@ -495,6 +716,15 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
     active = false;
     closing = false;
     stage = 'idle';
+    gallery = false;
+    activePhoto = -1;
+    prevPhoto = -1;
+    photoAlpha = 0;
+    halo = 0;
+    kick = 0;
+    photoGlow.visible = false;
+    uniforms.uHalo.value = 0;
+    uniforms.uKick.value = 0;
     group.visible = false;
     clearPhotos();
     geometry.setDrawRange(0, 0);
@@ -502,6 +732,55 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
   }
 
   function updatePhotos(time, dt) {
+    if (gallery) {
+      // 亮起来快、散场慢：最后那一两秒照片先在原地淡掉，粒子才收回去
+      photoAlpha = closing
+        ? Math.max(0, photoAlpha - dt * 1.5)
+        : Math.min(1, photoAlpha + dt * 3.2);
+
+      const item = photos[activePhoto];
+      if (photoAlpha <= 0.01 || !item) {
+        for (const entry of photos) entry.sprite.visible = false;
+        photoGlow.visible = false;
+        return;
+      }
+
+      // 换照片时从小的重新长大；照片贴在相机平面上，靠 uTextScale 跟随镜头
+      const t = clamp01((time - photoAt) / 0.62);
+      const ease = 1 - Math.pow(1 - t, 3);
+      const scale = uniforms.uTextScale.value;
+      const grow = 0.7 + 0.3 * ease;
+
+      // 上一张往下缩着淡掉，新的一张从 0.7 倍长大
+      if (prevPhoto >= 0 && prevPhoto !== activePhoto) {
+        const prev = photos[prevPhoto];
+        prev.fade = Math.max(0, prev.fade - dt * 5.5);
+        if (prev.fade > 0.01) {
+          prev.sprite.visible = true;
+          prev.material.opacity = photoAlpha * prev.fade;
+          prev.sprite.scale.multiplyScalar(1 - dt * 0.5);
+        } else {
+          prev.sprite.visible = false;
+          prevPhoto = -1;
+        }
+      }
+
+      for (let i = 0; i < photos.length; i++) {
+        const keep = i === activePhoto || i === prevPhoto;
+        if (!keep) photos[i].sprite.visible = false;
+      }
+      item.sprite.position.copy(uniforms.uAnchor.value);
+      item.sprite.scale.set(photoW * scale * grow, photoH * scale * grow, 1);
+      item.material.opacity = photoAlpha * (0.3 + 0.7 * ease);
+      item.material.rotation = 0;
+
+      photoGlow.visible = true;
+      photoGlow.position.copy(item.sprite.position);
+      photoGlow.scale.set(photoW * scale * grow * 1.75, photoH * scale * grow * 1.75, 1);
+      photoGlowMaterial.opacity = photoAlpha * 0.3;
+      return;
+    }
+
     for (const item of photos) {
       const t = clamp01((time - startedAt) / 1.3);
       const ease = t * t * (3 - 2 * t);
@@ -535,14 +814,32 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
     open,
     setText,
     close,
+    enterGallery,
+    nextPhoto,
 
     update(time, dt, camera) {
       if (!active) return;
 
       uniforms.uTime.value = time;
 
+      // 光框的进出，以及换照片那一下的径向抖。
+      // 收得比张得慢：照片先淡掉，光框再一层层散回云里
+      const haloGoal = gallery && !closing ? 1 : 0;
+      const haloRate = haloGoal > halo ? 2.6 : 1.3;
+      halo = THREE.MathUtils.clamp(
+        halo + Math.sign(haloGoal - halo) * Math.min(Math.abs(haloGoal - halo), dt * haloRate),
+        0,
+        1
+      );
+      uniforms.uHalo.value = halo;
+      kick = Math.max(0, kick - dt * 2.4);
+      uniforms.uKick.value = kick;
+
       // 推进 uProgress
-      const slow = stage === 'open' ? RATE_OPEN : stage === 'text' ? RATE_TEXT : RATE_CLOSE;
+      const closeRate =
+        gallery && stage === 'closing' ? RATE_CLOSE_SLOW : RATE_CLOSE;
+      const slow =
+        stage === 'open' ? RATE_OPEN : stage === 'text' ? RATE_TEXT : closeRate;
       const rate = slow * (reducedMotion ? RATE_FAST : 1);
       if (current < target) current = Math.min(target, current + rate * dt);
       else if (current > target) current = Math.max(target, current - rate * dt);
@@ -603,6 +900,8 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
 
     dispose() {
       clearPhotos();
+      photoGlowMaterial.dispose();
+      photoGlowTexture.dispose();
       geometry.dispose();
       material.dispose();
       group.clear();
