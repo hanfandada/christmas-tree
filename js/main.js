@@ -12,6 +12,8 @@ import { createRibbons } from './ribbons.js';
 import { createGifts } from './gifts.js';
 import { createTreeDecor } from './tree-decor.js';
 import { createPlatform } from './platform.js';
+import { createGlobe } from './globe.js';
+import { createShootingStars } from './shooting.js';
 import { createStar } from './star.js';
 import { createOrnaments } from './ornaments.js';
 import { createSnow } from './snow.js';
@@ -127,12 +129,16 @@ scene.add(sky.group);
 const world = new THREE.Group();
 scene.add(world);
 
+// 整棵树（树叶、装饰、挂饰、顶星）挂在一个自转组里，默认慢慢转
+const treeSpin = new THREE.Group();
+world.add(treeSpin);
+
 const tree = createTree(quality.tree);
-world.add(tree.group);
+treeSpin.add(tree.group);
 
 // 树上的装饰层：反向的冷白灯串 + 会闪的亮点
 const treeDecor = createTreeDecor();
-world.add(treeDecor.group);
+treeSpin.add(treeDecor.group);
 
 // 开场：几条从树顶绕下来的发光丝带，把树"带亮"，树亮完就撤走
 const ribbons = createRibbons({ reducedMotion });
@@ -142,15 +148,23 @@ world.add(ribbons.group);
 const platform = createPlatform();
 world.add(platform.group);
 
+// 包住整棵树的一层水晶光球
+const globe = createGlobe();
+scene.add(globe.group);
+
+// 天上偶尔划过的流星
+const shooting = createShootingStars();
+scene.add(shooting.group);
+
 // 树脚下堆的一堆礼物
 const gifts = createGifts();
 world.add(gifts.group);
 
 const ornaments = createOrnaments(quality.ornaments);
-world.add(ornaments.group);
+treeSpin.add(ornaments.group);
 
 const star = createStar();
-world.add(star.group);
+treeSpin.add(star.group);
 
 const trunk = createTrunk({
   count: Math.round(quality.tree * 0.12),
@@ -169,7 +183,7 @@ const bursts = createBurstSystem(scene);
 // 屏幕空间的手势反馈：准星、蓄力环、🤟 / 大拇指特效
 const gestureFx = createGestureFx();
 
-const photoOrnaments = createPhotoOrnaments(world, {
+const photoOrnaments = createPhotoOrnaments(treeSpin, {
   onSparkle: (position, strength = 0.32) => bursts.spawn(position, strength),
 });
 
@@ -218,6 +232,7 @@ let sceneHidden = false;
 tree.setPixelRatio(pixelRatio);
 treeDecor.setPixelRatio(pixelRatio);
 platform.setPixelRatio(pixelRatio);
+globe.setPixelRatio(pixelRatio);
 ribbons.setPixelRatio(pixelRatio);
 gifts.setPixelRatio(pixelRatio);
 trunk.setPixelRatio(pixelRatio);
@@ -980,6 +995,8 @@ if (query.get('debug') === '1') {
     musicPreview: renderPreview,
     compose,
     heart3d,
+    shooting,
+    globe,
     openCompose,
     composeToText,
     endCompose,
@@ -1047,6 +1064,7 @@ function degrade() {
   tree.setPixelRatio(pixelRatio);
   treeDecor.setPixelRatio(pixelRatio);
   platform.setPixelRatio(pixelRatio);
+  globe.setPixelRatio(pixelRatio);
   ribbons.setPixelRatio(pixelRatio);
   gifts.setPixelRatio(pixelRatio);
   trunk.setPixelRatio(pixelRatio);
@@ -1090,6 +1108,9 @@ function animate() {
   treeDecor.update(elapsed);
   platform.setProgress(growRaw);
   platform.update(elapsed);
+  globe.setProgress(growRaw);
+  globe.update(elapsed);
+  shooting.update(dt, camera);
   ribbons.setProgress(growRaw);
   // 丝带的带头压在树的点亮边界上，返回的强度同时用来加亮那一圈树叶
   const ribbon = ribbons.update(elapsed);
@@ -1135,6 +1156,8 @@ function animate() {
 
   // 鼠标视差：树随指针轻微偏转，幅度必须小，否则会晕
   pointer.lerp(pointerTarget, 1 - Math.pow(0.0015, dt));
+  // 默认缓慢自转：整棵树连着挂饰一起转，雪橇过场和拼字不受影响
+  treeSpin.rotation.y = reducedMotion ? 0 : elapsed * 0.08;
   world.rotation.y = pointer.x * 0.05;
   world.rotation.x = pointer.y * 0.022 + Math.sin(elapsed * 0.25) * 0.004;
 
