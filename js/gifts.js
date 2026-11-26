@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GROUND_Y } from './config.js';
+import { PLATFORM_TOP } from './platform.js';
 
 const GOLD = new THREE.Color(0xffd08a);
 
@@ -18,32 +18,32 @@ const BOX = { w: 0.44, h: 0.33, d: 0.44 };
 const LID = { w: 0.48, h: 0.06, d: 0.48 };
 
 /**
- * 摆一堆：由里往外铺四圈，越外面盒子越小（透视上才不会乱）。
+ * 摆一堆。
  *
- * 两条硬约束：
- *   - 半径太小会陷进树冠的裙摆里（树冠底半径 3，几乎垂到地面）
- *   - 正前方（a ≈ π/2，z 最大）的地面已经落到画面外，盒子会被底部裁掉
- * 所以正前方那一段跳过，其余铺满。
+ * 均匀撒成一圈会像栅栏——真实的一堆礼物是**几摊**挤在一起、有大有小、
+ * 还会叠。所以先定几个"堆心"，再围着它们撒，外层再补几个散落的。
+ * 半径控制在台面内（台子 4.4），正前方最中间那段留空，不然会压到底部文案。
  */
-const RINGS = [
-  { r: 2.75, n: 9, sMin: 0.62, sMax: 0.95, offset: 0.0 },
-  { r: 3.55, n: 10, sMin: 0.52, sMax: 0.82, offset: 0.5 },
-  { r: 4.35, n: 9, sMin: 0.44, sMax: 0.68, offset: 1.0 },
-  { r: 4.8, n: 7, sMin: 0.36, sMax: 0.58, offset: 0.25 },
+const CLUSTERS = [
+  { a: -0.55, r: 3.15, n: 5 },
+  { a: 0.62, r: 3.4, n: 4 },
+  { a: 1.45, r: 3.05, n: 4 },
+  { a: -1.62, r: 3.3, n: 5 },
+  { a: 2.35, r: 3.2, n: 4 },
+  { a: -2.5, r: 3.5, n: 3 },
 ];
 
 function buildPile() {
   const out = [];
-  const TAU = Math.PI * 2;
 
-  for (const ring of RINGS) {
-    for (let i = 0; i < ring.n; i++) {
-      const a = ((i + ring.offset) / ring.n) * TAU - Math.PI;
-      if (a > 0.68 && a < 2.45) continue; // 正前方：会被画面底部裁掉
+  for (const cluster of CLUSTERS) {
+    for (let i = 0; i < cluster.n; i++) {
+      const a = cluster.a + rand(-0.26, 0.26);
+      if (a > 1.0 && a < 2.0) continue; // 正前方最中间：会压到底部文案
       out.push({
-        a: a + rand(-0.05, 0.05),
-        r: ring.r + rand(-0.2, 0.2),
-        s: rand(ring.sMin, ring.sMax),
+        a,
+        r: cluster.r + rand(-0.42, 0.42),
+        s: rand(0.42, 0.86),
         yaw: rand(0, Math.PI),
         c: Math.floor(Math.random() * COLORS.length),
         y: 0,
@@ -51,21 +51,34 @@ function buildPile() {
     }
   }
 
-  // 摞几摞：在下层盒盖的正上方再放一个小盒子
-  for (const base of out.slice(0, 5)) {
+  // 几摞：在下层盒盖上方再放一个小盒子，堆才"立"得起来
+  for (const base of out.slice(0, 4)) {
     out.push({
-      a: base.a + rand(-0.06, 0.06),
-      r: base.r + rand(-0.06, 0.06),
-      s: base.s * rand(0.5, 0.66),
+      a: base.a + rand(-0.05, 0.05),
+      r: base.r + rand(-0.05, 0.05),
+      s: base.s * rand(0.55, 0.7),
       yaw: rand(0, Math.PI),
       c: Math.floor(Math.random() * COLORS.length),
       y: base.s * 0.74,
     });
   }
 
+  // 外围再撒几个小的，边缘不至于空
+  for (let i = 0; i < 6; i++) {
+    const a = rand(-Math.PI, Math.PI);
+    if (a > 1.0 && a < 2.0) continue;
+    out.push({
+      a,
+      r: rand(3.6, 4.05),
+      s: rand(0.3, 0.48),
+      yaw: rand(0, Math.PI),
+      c: Math.floor(Math.random() * COLORS.length),
+      y: 0,
+    });
+  }
+
   return out;
 }
-
 
 /** 礼物的配色：红、松绿、金、雪白、莓紫、暖橙 */
 const COLORS = [0xe0503f, 0x2f9c6a, 0xffc46a, 0xdfeaf6, 0xa4549c, 0xff8a45];
@@ -252,7 +265,7 @@ export function createGifts() {
 
     const x = Math.cos(spec.a) * spec.r;
     const z = Math.sin(spec.a) * spec.r;
-    points.position.set(x, GROUND_Y - 0.01 + spec.y, z);
+    points.position.set(x, PLATFORM_TOP - 0.02 + spec.y, z);
     points.rotation.y = spec.yaw;
     // 高矮胖瘦也变一变，不然十个盒子一个模子
     points.scale.set(spec.s * rand(0.9, 1.1), spec.s * rand(0.85, 1.15), spec.s * rand(0.9, 1.1));

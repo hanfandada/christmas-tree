@@ -11,6 +11,7 @@ import { createTree } from './tree.js';
 import { createRibbons } from './ribbons.js';
 import { createGifts } from './gifts.js';
 import { createTreeDecor } from './tree-decor.js';
+import { createPlatform } from './platform.js';
 import { createStar } from './star.js';
 import { createOrnaments } from './ornaments.js';
 import { createSnow } from './snow.js';
@@ -137,6 +138,10 @@ world.add(treeDecor.group);
 const ribbons = createRibbons({ reducedMotion });
 world.add(ribbons.group);
 
+// 树站的圆台：礼物摆在台面上，底部才收得住
+const platform = createPlatform();
+world.add(platform.group);
+
 // 树脚下堆的一堆礼物
 const gifts = createGifts();
 world.add(gifts.group);
@@ -197,6 +202,7 @@ world.add(compose.group);
 const sceneObjects = [
   tree.group,
   treeDecor.group,
+  platform.group,
   ribbons.group,
   gifts.group,
   ornaments.group,
@@ -211,6 +217,7 @@ let sceneHidden = false;
 /* 像素比同步给所有着色器 */
 tree.setPixelRatio(pixelRatio);
 treeDecor.setPixelRatio(pixelRatio);
+platform.setPixelRatio(pixelRatio);
 ribbons.setPixelRatio(pixelRatio);
 gifts.setPixelRatio(pixelRatio);
 trunk.setPixelRatio(pixelRatio);
@@ -1039,6 +1046,7 @@ function degrade() {
   composer.setPixelRatio(pixelRatio);
   tree.setPixelRatio(pixelRatio);
   treeDecor.setPixelRatio(pixelRatio);
+  platform.setPixelRatio(pixelRatio);
   ribbons.setPixelRatio(pixelRatio);
   gifts.setPixelRatio(pixelRatio);
   trunk.setPixelRatio(pixelRatio);
@@ -1080,6 +1088,8 @@ function animate() {
   tree.setProgress(growRaw);
   treeDecor.setProgress(growRaw);
   treeDecor.update(elapsed);
+  platform.setProgress(growRaw);
+  platform.update(elapsed);
   ribbons.setProgress(growRaw);
   // 丝带的带头压在树的点亮边界上，返回的强度同时用来加亮那一圈树叶
   const ribbon = ribbons.update(elapsed);
