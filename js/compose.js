@@ -212,7 +212,7 @@ const VERTEX = /* glsl */ `
     // 成字阶段压一档：上万颗加色点叠在笔画上，单个点再亮就糊成一片白，
     // 反而看不清字形。云阶段保持原亮度，只压落位之后的部分
     // 光框那圈粒子比云阶段稀，但挤在一圈上更容易过曝，先压一档
-    vAlpha = uOpacity * mix(1.0, 0.6, local) * mix(1.0, 0.55, uHalo);
+    vAlpha = uOpacity * mix(1.0, 0.6, local) * mix(1.0, 0.42, uHalo);
   }
 `;
 
@@ -343,6 +343,9 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
   let kick = 0;
   let frameAspect = 0;
   let haloBuilt = false;
+  // 竖屏会把整个 world 缩到 0.78，照片跟着一起缩就会显得小。
+  // 这里记一笔，算尺寸的时候除回去，照片在屏幕上才是想要的大小
+  let worldScale = 1;
   let photoW = 0;
   let photoH = 0;
 
@@ -479,8 +482,11 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
   function photoFit(aspect) {
     const view = window.innerWidth / Math.max(1, window.innerHeight);
     const refWidth = REF_VIEW_HEIGHT * Math.max(0.4, view);
-    const maxW = refWidth * 0.76;
-    const maxH = REF_VIEW_HEIGHT * 0.58;
+    // 竖屏窄，照片占满到 0.8 就已经很满了；横屏可以放到 0.86
+    const shareW = view < 0.82 ? 0.8 : 0.86;
+    const comp = 1 / Math.max(0.05, worldScale);
+    const maxW = refWidth * shareW * comp;
+    const maxH = REF_VIEW_HEIGHT * (view < 0.82 ? 0.62 : 0.7) * comp;
     let w = maxW;
     let h = w / Math.max(0.2, aspect);
     if (h > maxH) {
@@ -776,8 +782,9 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
 
       photoGlow.visible = true;
       photoGlow.position.copy(item.sprite.position);
-      photoGlow.scale.set(photoW * scale * grow * 1.75, photoH * scale * grow * 1.75, 1);
-      photoGlowMaterial.opacity = photoAlpha * 0.3;
+      // 柔光只铺到照片外面一点点：铺太大反而把照片衬得发灰
+      photoGlow.scale.set(photoW * scale * grow * 1.32, photoH * scale * grow * 1.32, 1);
+      photoGlowMaterial.opacity = photoAlpha * 0.16;
       return;
     }
 
@@ -872,6 +879,13 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
     setPixelRatio(value) {
       pixelRatio = value;
       uniforms.uPixelRatio.value = value;
+    },
+
+    /** 竖屏缩放要参与照片尺寸的计算，否则照片会跟着 world 一起缩水 */
+    setWorldScale(value) {
+      worldScale = value || 1;
+      haloBuilt = false;
+      if (gallery && photos[activePhoto]) layoutFrame(photos[activePhoto].aspect);
     },
 
     onDone(cb) {

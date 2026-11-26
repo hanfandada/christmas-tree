@@ -467,10 +467,12 @@ let santaPending = false;
  *
  * 加边框不是为了好看：夜空是黑的、照片本身可能也是暗的，纯图贴上去直接消失。
  * 一圈发光的边能在任何背景下勾出照片的轮廓，也顺手有了拍立得的味道。
+ *
+ * maxEdge 按用途给：雪橇拖尾里照片只有百来像素，640 就够；
+ * 但"捏合看照片"是整屏显示，640 会被放大糊掉，那里要 1024
  */
-function framePhoto(bitmap) {
-  // 照片在屏幕上最多百来像素，贴图不需要原尺寸：长边压到 640，省显存也省上传时间
-  const scale = Math.min(1, 640 / Math.max(bitmap.width, bitmap.height));
+function framePhoto(bitmap, maxEdge = 640) {
+  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
   const pad = Math.max(10, Math.round(Math.min(width, height) * 0.075));
@@ -487,9 +489,11 @@ function framePhoto(bitmap) {
 
   ctx.save();
   ctx.lineWidth = stroke;
-  ctx.strokeStyle = 'rgba(255, 222, 164, 0.96)';
-  ctx.shadowColor = 'rgba(255, 186, 104, 0.95)';
-  ctx.shadowBlur = pad * 1.5;
+  ctx.strokeStyle = 'rgba(255, 222, 164, 0.82)';
+  ctx.shadowColor = 'rgba(255, 186, 104, 0.8)';
+  // 光晕原来给到 1.5 倍 pad，泛光再一叠，整圈就烧成一片白，
+  // 照片在它旁边看着就"过曝"——其实是边太亮
+  ctx.shadowBlur = pad * 0.8;
   ctx.beginPath();
   if (typeof ctx.roundRect === 'function') {
     ctx.roundRect(inset, inset, canvas.width - inset * 2, canvas.height - inset * 2, radius);
@@ -519,7 +523,7 @@ function pickRandomPhoto() {
 }
 
 /** 把树上最近挂的几张照片画成带金框的贴图卡片（雪橇过场和组合技共用） */
-async function buildPhotoCards(limit) {
+async function buildPhotoCards(limit, maxEdge = 640) {
   const ids = photoList().slice(-limit);
   const cards = [];
   for (const id of ids) {
@@ -529,7 +533,7 @@ async function buildPhotoCards(limit) {
       // 走一遍 canvas：ImageBitmap 直接当贴图在部分浏览器里会上下翻，
       // 画到 canvas 上就是标准的 CanvasTexture 行为
       const bitmap = await createImageBitmap(row.blob);
-      const canvas = framePhoto(bitmap);
+      const canvas = framePhoto(bitmap, maxEdge);
       if (bitmap.close) bitmap.close();
 
       const texture = new THREE.CanvasTexture(canvas);
@@ -556,7 +560,7 @@ async function buildPhotoCards(limit) {
 async function buildDefaultCard() {
   const response = await fetch(defaultCardDataUrl());
   const bitmap = await createImageBitmap(await response.blob());
-  const canvas = framePhoto(bitmap);
+  const canvas = framePhoto(bitmap, 1024);
   if (bitmap.close) bitmap.close();
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -732,7 +736,8 @@ async function openCompose() {
   // 雪橇过场和粒子拼字同时出现会互相打架，先收掉
   santa.stop();
   try {
-    const cards = await buildPhotoCards(8);
+    // 看照片是整屏显示，贴图给到 1024，放大才不会糊
+    const cards = await buildPhotoCards(8, 1024);
     if (!cards.length) cards.push(await buildDefaultCard());
     const photoList = cards.map((card) => ({
       id: card.id,
@@ -1056,6 +1061,8 @@ if (query.get('debug') === '1') {
     scatterCompose,
     scene,
     renderer,
+    composer,
+    bloomPass,
     controls,
   };
 }
@@ -1083,6 +1090,8 @@ function layout() {
   // 光球挂在 scene 上（不跟 world 转），所以要自己跟一次竖屏缩放，
   // 否则树缩了球没缩，球底会掉到圆台下面去
   globe.group.scale.setScalar(scale);
+  // 照片不算这个缩放就会在竖屏上小一圈
+  compose.setWorldScale(scale);
 
   // 雪橇路径横跨 ±6.8，窄屏按画面宽度压扁一点，别飞出画外
   const halfWidth = Math.tan((CAMERA.fov * Math.PI) / 360) * CAMERA.position[2] * aspect;
