@@ -10,6 +10,7 @@ import { createBackground } from './background.js';
 import { createTree } from './tree.js';
 import { createRibbons } from './ribbons.js';
 import { createGifts } from './gifts.js';
+import { createTreeDecor } from './tree-decor.js';
 import { createStar } from './star.js';
 import { createOrnaments } from './ornaments.js';
 import { createSnow } from './snow.js';
@@ -128,6 +129,10 @@ scene.add(world);
 const tree = createTree(quality.tree);
 world.add(tree.group);
 
+// 树上的装饰层：反向的冷白灯串 + 会闪的亮点
+const treeDecor = createTreeDecor();
+world.add(treeDecor.group);
+
 // 开场：几条从树顶绕下来的发光丝带，把树"带亮"，树亮完就撤走
 const ribbons = createRibbons({ reducedMotion });
 world.add(ribbons.group);
@@ -191,6 +196,7 @@ world.add(compose.group);
 // 粒子云接管画面时要一起藏起来的真实场景
 const sceneObjects = [
   tree.group,
+  treeDecor.group,
   ribbons.group,
   gifts.group,
   ornaments.group,
@@ -204,6 +210,7 @@ let sceneHidden = false;
 
 /* 像素比同步给所有着色器 */
 tree.setPixelRatio(pixelRatio);
+treeDecor.setPixelRatio(pixelRatio);
 ribbons.setPixelRatio(pixelRatio);
 gifts.setPixelRatio(pixelRatio);
 trunk.setPixelRatio(pixelRatio);
@@ -1031,6 +1038,7 @@ function degrade() {
   renderer.setPixelRatio(pixelRatio);
   composer.setPixelRatio(pixelRatio);
   tree.setPixelRatio(pixelRatio);
+  treeDecor.setPixelRatio(pixelRatio);
   ribbons.setPixelRatio(pixelRatio);
   gifts.setPixelRatio(pixelRatio);
   trunk.setPixelRatio(pixelRatio);
@@ -1070,6 +1078,8 @@ function animate() {
     : clamp01((elapsed - TIMELINE.growDelay) / TIMELINE.growDuration);
   // 用线性推进：easeOut 会把前 1/3 的时间冲掉，看上去还是"一下就亮完了"
   tree.setProgress(growRaw);
+  treeDecor.setProgress(growRaw);
+  treeDecor.update(elapsed);
   ribbons.setProgress(growRaw);
   // 丝带的带头压在树的点亮边界上，返回的强度同时用来加亮那一圈树叶
   const ribbon = ribbons.update(elapsed);
