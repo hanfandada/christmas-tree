@@ -113,7 +113,7 @@ export function createPlatform() {
         float run = pow(0.5 + 0.5 * sin(aPhase * 3.0 - uTime * 1.1), 6.0);
 
         vec3 color = uFace;
-        float alpha = 0.26 * twinkle;
+        float alpha = 0.17 * twinkle;
         float sizeMul = 1.0;
 
         if (aKind > 0.5 && aKind < 1.5) {
