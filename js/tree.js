@@ -48,6 +48,9 @@ export function createTree(count) {
     uTime: { value: 0 },
     uProgress: { value: 0 },
     uPixelRatio: { value: 1 },
+    // 开场丝带扫过的那一层：丝带带头压到哪，这里就亮到哪
+    uBandHeight: { value: 1 },
+    uBand: { value: 0 },
     uBottom: { value: new THREE.Color(PALETTE.treeBottom) },
     uMid: { value: new THREE.Color(PALETTE.treeMid) },
     uTop: { value: new THREE.Color(PALETTE.treeTop) },
@@ -63,6 +66,8 @@ export function createTree(count) {
       uniform float uTime;
       uniform float uProgress;
       uniform float uPixelRatio;
+      uniform float uBandHeight;
+      uniform float uBand;
       uniform vec3 uBottom;
       uniform vec3 uMid;
       uniform vec3 uTop;
@@ -100,8 +105,12 @@ export function createTree(count) {
         col = mix(col, uTop, smoothstep(0.52, 1.0, aHeight));
         col = mix(col, uWarm, aTint * 0.85);
 
+        // 丝带带头扫过的那一圈：紧跟着点亮边界，比周围亮一点，
+        // 看上去是丝带把树叶点着的，而不是树自己在淡入
+        float band = uBand * exp(-pow((aHeight - uBandHeight) * 4.5, 2.0));
+
         vColor = col;
-        vAlpha = reveal * (0.15 + 0.42 * brightness);
+        vAlpha = reveal * (0.15 + 0.42 * brightness) * (1.0 + 0.85 * band);
       }
     `,
     fragmentShader: /* glsl */ `
@@ -214,6 +223,11 @@ export function createTree(count) {
     setProgress(value) {
       uniforms.uProgress.value = value;
       sUniforms.uProgress.value = value;
+    },
+    /** 开场丝带的带头高度（0 底 1 顶）和强度，用来加亮它扫过的那一圈 */
+    setRibbonBand(height, strength) {
+      uniforms.uBandHeight.value = height;
+      uniforms.uBand.value = strength;
     },
     setPixelRatio(value) {
       uniforms.uPixelRatio.value = value;

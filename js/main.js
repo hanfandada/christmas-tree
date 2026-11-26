@@ -8,6 +8,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CAMERA, GROUND_Y, QUALITY, TIMELINE } from './config.js';
 import { createBackground } from './background.js';
 import { createTree } from './tree.js';
+import { createRibbons } from './ribbons.js';
 import { createStar } from './star.js';
 import { createOrnaments } from './ornaments.js';
 import { createSnow } from './snow.js';
@@ -126,6 +127,10 @@ scene.add(world);
 const tree = createTree(quality.tree);
 world.add(tree.group);
 
+// 开场：几条从树顶绕下来的发光丝带，把树"带亮"，树亮完就撤走
+const ribbons = createRibbons({ reducedMotion });
+world.add(ribbons.group);
+
 const ornaments = createOrnaments(quality.ornaments);
 world.add(ornaments.group);
 
@@ -181,6 +186,7 @@ world.add(compose.group);
 // 粒子云接管画面时要一起藏起来的真实场景
 const sceneObjects = [
   tree.group,
+  ribbons.group,
   ornaments.group,
   star.group,
   trunk.group,
@@ -192,6 +198,7 @@ let sceneHidden = false;
 
 /* 像素比同步给所有着色器 */
 tree.setPixelRatio(pixelRatio);
+ribbons.setPixelRatio(pixelRatio);
 trunk.setPixelRatio(pixelRatio);
 snow.setPixelRatio(pixelRatio);
 sky.setPixelRatio(pixelRatio);
@@ -936,6 +943,10 @@ if (query.get('debug') === '1') {
   window.__xmas = {
     THREE,
     camera,
+    // 开场动画的时钟：自动化取样要按它对齐，而不是按 wall clock
+    get elapsed() {
+      return elapsed;
+    },
     photoOrnaments,
     openViewer,
     closeViewer,
@@ -1013,6 +1024,7 @@ function degrade() {
   renderer.setPixelRatio(pixelRatio);
   composer.setPixelRatio(pixelRatio);
   tree.setPixelRatio(pixelRatio);
+  ribbons.setPixelRatio(pixelRatio);
   trunk.setPixelRatio(pixelRatio);
   snow.setPixelRatio(pixelRatio);
   sky.setPixelRatio(pixelRatio);
@@ -1050,6 +1062,10 @@ function animate() {
     : clamp01((elapsed - TIMELINE.growDelay) / TIMELINE.growDuration);
   // 用线性推进：easeOut 会把前 1/3 的时间冲掉，看上去还是"一下就亮完了"
   tree.setProgress(growRaw);
+  ribbons.setProgress(growRaw);
+  // 丝带的带头压在树的点亮边界上，返回的强度同时用来加亮那一圈树叶
+  const ribbon = ribbons.update(elapsed);
+  tree.setRibbonBand(ribbon.head, reducedMotion ? 0 : ribbon.strength);
   trunk.setProgress(growRaw);
 
   const ornamentReveal = reducedMotion
