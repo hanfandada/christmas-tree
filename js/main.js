@@ -9,6 +9,7 @@ import { CAMERA, GROUND_Y, QUALITY, TIMELINE } from './config.js';
 import { createBackground } from './background.js';
 import { createTree } from './tree.js';
 import { createRibbons } from './ribbons.js';
+import { createGifts } from './gifts.js';
 import { createStar } from './star.js';
 import { createOrnaments } from './ornaments.js';
 import { createSnow } from './snow.js';
@@ -131,6 +132,10 @@ world.add(tree.group);
 const ribbons = createRibbons({ reducedMotion });
 world.add(ribbons.group);
 
+// 树脚下堆的一堆礼物
+const gifts = createGifts();
+world.add(gifts.group);
+
 const ornaments = createOrnaments(quality.ornaments);
 world.add(ornaments.group);
 
@@ -187,6 +192,7 @@ world.add(compose.group);
 const sceneObjects = [
   tree.group,
   ribbons.group,
+  gifts.group,
   ornaments.group,
   star.group,
   trunk.group,
@@ -199,6 +205,7 @@ let sceneHidden = false;
 /* 像素比同步给所有着色器 */
 tree.setPixelRatio(pixelRatio);
 ribbons.setPixelRatio(pixelRatio);
+gifts.setPixelRatio(pixelRatio);
 trunk.setPixelRatio(pixelRatio);
 snow.setPixelRatio(pixelRatio);
 sky.setPixelRatio(pixelRatio);
@@ -1025,6 +1032,7 @@ function degrade() {
   composer.setPixelRatio(pixelRatio);
   tree.setPixelRatio(pixelRatio);
   ribbons.setPixelRatio(pixelRatio);
+  gifts.setPixelRatio(pixelRatio);
   trunk.setPixelRatio(pixelRatio);
   snow.setPixelRatio(pixelRatio);
   sky.setPixelRatio(pixelRatio);
@@ -1077,6 +1085,8 @@ function animate() {
   tree.update(elapsed);
   trunk.update(elapsed);
   ornaments.update(elapsed, ornamentReveal);
+  gifts.update(elapsed);
+  gifts.setReveal(ornamentReveal);
   star.update(elapsed, starReveal);
   snow.update(elapsed);
   sky.update(elapsed);

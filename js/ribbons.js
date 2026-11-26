@@ -18,21 +18,25 @@ const REVEAL_RATE = 1.12;
  * 丝带在树底就"没了"。按高度算虽然底部会被拉成一道长弧，但那正好是
  * "丝带绕到树脚"的样子——只要把亮度压住就行。
  */
-const TAIL = 0.26;
+const TAIL = 0.23;
 
 /**
- * 三条丝带：圈数、转速、拧的幅度、离树面的距离都不一样，
- * 免得看起来像一个模子刻出来、三份完全重合的螺旋。
+ * 五条丝带：圈数、转速、拧的幅度、离树面的距离都不一样，
+ * 免得看起来像一个模子刻出来、五份完全重合的螺旋。
  */
 const RIBBONS = [
-  { phase: 0.0, start: 0.0, turns: 2.2, spin: 0.5, twist: 0.5, radius: 1.04, tint: 0.0 },
-  { phase: 0.06, start: 2.1, turns: 2.7, spin: -0.38, twist: -0.4, radius: 1.1, tint: 0.45 },
-  { phase: -0.05, start: 4.3, turns: 3.1, spin: 0.28, twist: 0.6, radius: 0.99, tint: 0.9 },
+  { phase: 0.0, start: 0.0, turns: 2.2, spin: 0.5, twist: 0.5, radius: 1.03, tint: 0.0 },
+  { phase: 0.11, start: 1.3, turns: 2.5, spin: -0.3, twist: -0.45, radius: 1.09, tint: 0.3 },
+  { phase: -0.12, start: 2.6, turns: 2.8, spin: 0.36, twist: 0.6, radius: 1.16, tint: 0.6 },
+  { phase: 0.19, start: 3.9, turns: 3.2, spin: -0.22, twist: -0.55, radius: 0.98, tint: 0.85 },
+  { phase: -0.2, start: 5.1, turns: 3.6, spin: 0.17, twist: 0.35, radius: 1.12, tint: 1.0 },
 ];
 
-const POINTS_PER_RIBBON = 1800;
-// 每个采样点再出一颗大的暗点当外晕：只有实心点的话，这条带子就细得像根线
-const PER_SAMPLE = 2;
+const POINTS_PER_RIBBON = 1300;
+// 一条丝带两条边：单股看着像一根电线，双股才像一条带子
+const STRANDS = 2;
+// 每股再出一颗大的暗点当外晕
+const KINDS = 2;
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -71,7 +75,8 @@ function evenHeights({ turns, radius }, count) {
 
 /** 开场时从上往下绕的几条发光丝带：让"树亮起来"有个看得见的原因 */
 export function createRibbons({ reducedMotion = false } = {}) {
-  const total = RIBBONS.length * POINTS_PER_RIBBON * PER_SAMPLE;
+  const perSample = STRANDS * KINDS;
+  const total = RIBBONS.length * POINTS_PER_RIBBON * perSample;
   const positions = new Float32Array(total * 3);
   const heights = new Float32Array(total);
   const phases = new Float32Array(total);
@@ -80,34 +85,43 @@ export function createRibbons({ reducedMotion = false } = {}) {
   const twists = new Float32Array(total);
   const tints = new Float32Array(total);
   const halos = new Float32Array(total);
-  const turnAttr = new Float32Array(total);
+  const sparks = new Float32Array(total);
+  const seeds = new Float32Array(total);
 
   let n = 0;
   for (const ribbon of RIBBONS) {
     const hs = evenHeights(ribbon, POINTS_PER_RIBBON);
     for (let i = 0; i < POINTS_PER_RIBBON; i++) {
       const h = hs[i];
-      const r = Math.max(0.05, TREE.baseRadius * Math.pow(1 - h, 0.94) * ribbon.radius);
-      const angle = ribbon.start + h * ribbon.turns * TAU;
-      const x = Math.cos(angle) * r;
-      const y = TREE.baseY + h * TREE.height;
-      const z = Math.sin(angle) * r;
-      const core = 1.8 + Math.random() * 1.6;
+      const baseR = Math.max(0.05, TREE.baseRadius * Math.pow(1 - h, 0.94) * ribbon.radius);
 
-      for (let k = 0; k < PER_SAMPLE; k++) {
-        positions[n * 3] = x;
-        positions[n * 3 + 1] = y;
-        positions[n * 3 + 2] = z;
+      for (let st = 0; st < STRANDS; st++) {
+        const side = st === 0 ? -1 : 1;
+        // 两条边：半径错开一点、角度也错开一点，凑成一条有宽度的带子
+        const r = Math.max(0.04, baseR + side * 0.06);
+        const angle = ribbon.start + h * ribbon.turns * TAU + side * 0.05;
+        const x = Math.cos(angle) * r;
+        const y = TREE.baseY + h * TREE.height;
+        const z = Math.sin(angle) * r;
+        const core = 1.7 + Math.random() * 1.5;
 
-        heights[n] = h;
-        phases[n] = ribbon.phase;
-        sizes[n] = k === 0 ? core : core * 2.4;
-        spins[n] = ribbon.spin;
-        twists[n] = ribbon.twist;
-        tints[n] = ribbon.tint;
-        halos[n] = k;
-        turnAttr[n] = ribbon.turns;
-        n += 1;
+        for (let k = 0; k < KINDS; k++) {
+          positions[n * 3] = x;
+          positions[n * 3 + 1] = y;
+          positions[n * 3 + 2] = z;
+
+          heights[n] = h;
+          phases[n] = ribbon.phase;
+          sizes[n] = k === 0 ? core : core * 2.4;
+          spins[n] = ribbon.spin;
+          twists[n] = ribbon.twist;
+          tints[n] = ribbon.tint;
+          halos[n] = k;
+          // 一成左右的点当火星：在丝带边上一闪一闪地抖
+          sparks[n] = k === 0 && Math.random() < 0.12 ? 1 : 0;
+          seeds[n] = Math.random();
+          n += 1;
+        }
       }
     }
   }
@@ -121,7 +135,8 @@ export function createRibbons({ reducedMotion = false } = {}) {
   geometry.setAttribute('aTwist', new THREE.BufferAttribute(twists, 1));
   geometry.setAttribute('aTint', new THREE.BufferAttribute(tints, 1));
   geometry.setAttribute('aHalo', new THREE.BufferAttribute(halos, 1));
-  geometry.setAttribute('aTurns', new THREE.BufferAttribute(turnAttr, 1));
+  geometry.setAttribute('aSpark', new THREE.BufferAttribute(sparks, 1));
+  geometry.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
   geometry.computeBoundingSphere();
 
   const uniforms = {
@@ -130,7 +145,7 @@ export function createRibbons({ reducedMotion = false } = {}) {
     uPixelRatio: { value: 1 },
     uFade: { value: 0 },
     uLift: { value: 0 },
-    uHead: { value: new THREE.Color(0xffeecb) },
+    uHead: { value: new THREE.Color(0xfff0d2) },
     uTail: { value: new THREE.Color(PALETTE.string) },
     uCool: { value: new THREE.Color(PALETTE.treeTop) },
   };
@@ -157,14 +172,14 @@ export function createRibbons({ reducedMotion = false } = {}) {
       attribute float aTwist;
       attribute float aTint;
       attribute float aHalo;
-      attribute float aTurns;
+      attribute float aSpark;
+      attribute float aSeed;
 
       varying vec3 vColor;
       varying float vAlpha;
 
       const float REVEAL_RATE = ${REVEAL_RATE.toFixed(2)};
       const float TAIL = ${TAIL.toFixed(2)};
-      const float TREE_H = ${TREE.height.toFixed(2)};
 
       void main() {
         // 绕竖轴慢慢转，外加一点随高度拧的麻花：转的是几何体，不是贴图
@@ -176,34 +191,51 @@ export function createRibbons({ reducedMotion = false } = {}) {
         p.z = position.x * s + position.z * c;
         p.y += uLift; // 收场时整体往上抽走
 
-        // 带头：踩着树的点亮边界往下走，aPhase 让三条前后错开一点
+        // 带头：踩着树的点亮边界往下走，aPhase 让五条前后错开一点
         float head = 1.0 - REVEAL_RATE * uProgress + aPhase;
         float passed = aHeight - head; // >= 0 表示带头已经扫过这一层
 
         // 树底那一圈半径大，同样一段高度差会拉成很长一道弧：
         // 亮度按半径反比压一下，底部才不会白成一道激光
         float rHere = length(position.xz);
-        float wide = mix(1.0, 0.44, clamp(rHere / 3.0, 0.0, 1.0));
+        float wide = mix(1.0, 0.26, clamp(rHere / 3.0, 0.0, 1.0));
 
         // 扫过之后才亮；离带头越远越暗，于是形成一条有方向的拖尾
         float lit = smoothstep(0.0, 0.012, passed);
         float tail = 1.0 - smoothstep(0.02, TAIL, passed);
         // 越往后越收：收场前丝带不该再抢戏
-        float settle = mix(1.0, 0.5, uProgress);
-        float glow = lit * (0.05 + 0.95 * pow(tail, 1.5)) * wide * settle;
+        float settle = mix(1.0, 0.35, uProgress);
+        // 一道顺着丝带往下跑的脉动，带子才有"活"的感觉
+        float pulse = 0.78 + 0.22 * sin(uTime * 7.0 - aHeight * 26.0);
+        float glow = lit * (0.05 + 0.95 * pow(tail, 1.4)) * wide * settle * pulse * 0.8;
+
+        float twinkle = 0.78 + 0.22 * sin(uTime * 3.4 + aHeight * 42.0 + aPhase * 11.0);
+
+        // 带头粗、尾巴细：一条带子该有的收束感
+        float taper = mix(0.45, 1.0, tail);
+        float size = aSize * taper;
+
+        // 火星：从丝带上飞出来的一点点碎光，位置每帧抖，亮度比带子更跳。
+        // 必须在算 gl_Position 之前挪位置，否则抖了等于没抖
+        if (aSpark > 0.5) {
+          float ph = aSeed * 40.0 + aHeight * 30.0;
+          p.x += sin(uTime * 2.6 + ph) * 0.11;
+          p.y += cos(uTime * 3.1 + ph * 1.3) * 0.09;
+          p.z += sin(uTime * 2.2 + ph * 0.7) * 0.11;
+          size *= 0.75;
+          twinkle = 0.25 + 0.75 * abs(sin(uTime * 6.5 + ph * 2.0));
+        }
 
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mv;
 
-        float twinkle = 0.78 + 0.22 * sin(uTime * 3.4 + aHeight * 42.0 + aPhase * 11.0);
-        // 带头粗、尾巴细：一条带子该有的收束感
-        float taper = mix(0.45, 1.0, tail);
-        gl_PointSize = aSize * taper * uPixelRatio * twinkle * (26.0 / max(0.6, -mv.z));
+        gl_PointSize = size * uPixelRatio * twinkle * (26.0 / max(0.6, -mv.z));
 
         vec3 tailColor = mix(uTail, uCool, aTint * 0.55);
-        vColor = mix(tailColor, uHead, tail) * (0.85 + 0.5 * tail);
+        vColor = mix(tailColor, uHead, tail) * (0.75 + 0.4 * tail);
         // 外晕那颗更大更暗，负责把带子的边缘晕开
         vAlpha = glow * uFade * (0.3 + 0.7 * tail) * mix(1.0, 0.16, aHalo);
+        vAlpha *= mix(1.0, 1.6, aSpark);
       }
     `,
     fragmentShader: /* glsl */ `
@@ -247,7 +279,7 @@ export function createRibbons({ reducedMotion = false } = {}) {
 
       // 星星亮起来时丝带跟着出现；树整棵亮完再用 0.65 秒抽走
       const fadeIn = clamp01((elapsed - TIMELINE.starDelay) / 0.45);
-      const fadeOut = 1 - clamp01((elapsed - doneAt) / 0.65);
+      const fadeOut = 1 - clamp01((elapsed - doneAt) / 0.5);
       const fade = reducedMotion ? 0 : fadeIn * fadeOut;
 
       uniforms.uFade.value = fade;
