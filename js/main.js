@@ -1166,8 +1166,7 @@ function animate() {
   platform.setProgress(growRaw);
   platform.update(elapsed);
   globe.setProgress(growRaw);
-  // 高光要跟着镜头走，所以每秒都得把 camera 递进去
-  globe.update(elapsed, camera);
+  globe.update(elapsed);
   shooting.update(dt, camera);
   ribbons.setProgress(growRaw);
   // 丝带的带头压在树的点亮边界上，返回的强度同时用来加亮那一圈树叶
