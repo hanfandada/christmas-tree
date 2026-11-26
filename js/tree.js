@@ -133,8 +133,9 @@ export function createTree(count) {
         gl_PointSize = aSize * uPixelRatio * (26.0 / max(0.6, -mv.z))
           * (0.85 + 0.35 * twinkle) * (0.85 + 0.3 * aRadial);
 
-        vec3 col = mix(uBottom, uMid, smoothstep(0.0, 0.52, aHeight));
-        col = mix(col, uTop, smoothstep(0.52, 1.0, aHeight));
+        // 三段：根部的紫收得紧一点（只占底下三成），青绿撑住中段，梢上泛白
+        vec3 col = mix(uBottom, uMid, smoothstep(0.0, 0.42, aHeight));
+        col = mix(col, uTop, smoothstep(0.45, 1.0, aHeight));
         col = mix(col, uWarm, aTint * 0.85);
         // 枝梢挂一点冷白，像落了层薄霜
         col = mix(col, uFrost, smoothstep(0.9, 1.0, aRadial) * 0.18);

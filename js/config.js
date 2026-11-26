@@ -25,9 +25,10 @@ export const PALETTE = {
   backgroundHigh: 0x061021,
   backgroundLow: 0x010104,
   nebula: 0x07231d,
-  treeBottom: 0x0a2c22,
-  treeMid: 0x14a06c,
-  treeTop: 0x86f2c4,
+  // 三色渐变：根部暗紫 → 腰上青绿 → 树梢泛白，像一层冻住的极光
+  treeBottom: 0x6a22c0,
+  treeMid: 0x00c2a8,
+  treeTop: 0xa6ffe6,
   treeWarm: 0xffa64d,
   string: 0xffd79a,
   star: 0xffe0a8,
