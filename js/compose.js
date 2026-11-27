@@ -212,7 +212,10 @@ const VERTEX = /* glsl */ `
     // 成字阶段压一档：上万颗加色点叠在笔画上，单个点再亮就糊成一片白，
     // 反而看不清字形。云阶段保持原亮度，只压落位之后的部分
     // 光框那圈粒子比云阶段稀，但挤在一圈上更容易过曝，先压一档
-    vAlpha = uOpacity * mix(1.0, 0.6, local) * mix(1.0, 0.42, uHalo);
+    // 一进"看照片"，云先立刻压暗（smoothstep 让它在 uHalo=0.5 就到位），
+    // 不然照片是浮在一团亮云上的
+    float dimmed = smoothstep(0.0, 0.5, uHalo);
+    vAlpha = uOpacity * mix(1.0, 0.6, local) * mix(1.0, 0.42, dimmed);
   }
 `;
 
@@ -621,7 +624,9 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
     if (!photos.length) return false;
     stage = 'gallery';
     gallery = true;
-    photoAlpha = 0;
+    // 直接给满：照片是"看清楚"优先，淡入的那半秒透出来的是后面的粒子云，
+    // 看上去就是白茫茫一片。入场只靠 0.7 → 1 的放大来表现
+    photoAlpha = 1;
     haloBuilt = false;
     prevPhoto = -1;
     showPhoto(timer);
@@ -777,7 +782,10 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
       }
       item.sprite.position.copy(uniforms.uAnchor.value);
       item.sprite.scale.set(photoW * scale * grow, photoH * scale * grow, 1);
-      item.material.opacity = photoAlpha * (0.3 + 0.7 * ease);
+      // 透明度直接给满，只让尺寸长大。
+      // 原来是从 0.3 淡进来，结果透出来的是后面那团还没散开的粒子云，
+      // 照片就成了"白茫茫的一片"——这一条是关键
+      item.material.opacity = photoAlpha;
       item.material.rotation = 0;
 
       photoGlow.visible = true;
@@ -832,7 +840,7 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
       // 光框的进出，以及换照片那一下的径向抖。
       // 收得比张得慢：照片先淡掉，光框再一层层散回云里
       const haloGoal = gallery && !closing ? 1 : 0;
-      const haloRate = haloGoal > halo ? 2.6 : 1.3;
+      const haloRate = haloGoal > halo ? 6.0 : 1.3;
       halo = THREE.MathUtils.clamp(
         halo + Math.sign(haloGoal - halo) * Math.min(Math.abs(haloGoal - halo), dt * haloRate),
         0,
@@ -904,6 +912,13 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
     },
     get stage() {
       return stage;
+    },
+    /**
+     * 照片现在的可见程度（0~1）。主循环拿它去收泛光：
+     * 照片是"看得清"优先，泛光会把金边烧白、把整块区域糊成一片
+     */
+    get photoLevel() {
+      return gallery && active ? photoAlpha : 0;
     },
     get photoCount() {
       return photos.length;

@@ -107,9 +107,10 @@ const composer = new EffectComposer(renderer);
 composer.setPixelRatio(pixelRatio);
 composer.addPass(new RenderPass(scene, camera));
 
+const BLOOM_STRENGTH = 0.5;
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  0.5, // strength
+  BLOOM_STRENGTH,
   0.42, // radius
   0.45 // threshold
 );
@@ -1226,6 +1227,10 @@ function animate() {
   treeSpin.rotation.y = reducedMotion ? 0 : elapsed * 0.08;
   world.rotation.y = pointer.x * 0.05;
   world.rotation.x = pointer.y * 0.022 + Math.sin(elapsed * 0.25) * 0.004;
+
+  // 看照片的时候把泛光收掉大半：金边会被烧成一圈霓虹、整块区域糊成白
+  const photoLevel = compose.photoLevel;
+  bloomPass.strength = BLOOM_STRENGTH * (1 - 0.66 * photoLevel);
 
   if (useBloom) composer.render();
   else renderer.render(scene, camera);
