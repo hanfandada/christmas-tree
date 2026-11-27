@@ -46,7 +46,9 @@ const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matc
 // ?quality=high|medium|low 可强制画质档位；强制后不再自动降级（截图和演示用）
 const query = new URLSearchParams(window.location.search);
 const forcedQuality = query.get('quality');
-const allowAutoDegrade = !forcedQuality;
+// ?nodegrade=1 关掉自动降档：无头浏览器帧率低，一降档就没泛光了，
+// 自动化测试就永远看不到真机上的那个画面
+const allowAutoDegrade = !forcedQuality && query.get('nodegrade') !== '1';
 
 /* ---------------- 画质档位 ---------------- */
 
@@ -118,6 +120,8 @@ composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
 let useBloom = quality.bloom;
+// 看照片的权重，平滑过一档，用来收泛光
+let photoFade = 0;
 
 /* ---------------- 场景内容 ---------------- */
 
@@ -1064,6 +1068,12 @@ if (query.get('debug') === '1') {
     renderer,
     composer,
     bloomPass,
+    get bloomOn() {
+      return useBloom;
+    },
+    get quality() {
+      return qualityName;
+    },
     controls,
   };
 }
@@ -1233,9 +1243,15 @@ function animate() {
   world.rotation.y = pointer.x * 0.05;
   world.rotation.x = pointer.y * 0.022 + Math.sin(elapsed * 0.25) * 0.004;
 
-  // 看照片的时候把泛光收掉大半：金边会被烧成一圈霓虹、整块区域糊成白
-  const photoLevel = compose.photoLevel;
-  bloomPass.strength = BLOOM_STRENGTH * (1 - 0.78 * photoLevel);
+  // 看照片的时候泛光基本要关掉。
+  //
+  // 泛光的阈值是 0.45，而照片里只要有天空、白墙、雪地，整块都在阈值以上，
+  // 于是泛光把照片自己模糊一遍再叠回去——对比度直接塌掉：
+  // 实测红屋顶 (135,45,49) → (187,159,165)，天空 225 → 239，等于蒙了层白纱。
+  // 这不是"调弱一点"能解决的，必须关掉，所以这里收到 4%。
+  // 用平滑过的权重，切换时背景不会"啪"一下从有光晕变成没光晕。
+  photoFade += (compose.photoLevel - photoFade) * Math.min(1, dt * 5);
+  bloomPass.strength = BLOOM_STRENGTH * (1 - 0.96 * photoFade);
 
   if (useBloom) composer.render();
   else renderer.render(scene, camera);
