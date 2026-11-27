@@ -215,7 +215,7 @@ const VERTEX = /* glsl */ `
     // 一进"看照片"，云先立刻压暗（smoothstep 让它在 uHalo=0.5 就到位），
     // 不然照片是浮在一团亮云上的
     float dimmed = smoothstep(0.0, 0.5, uHalo);
-    vAlpha = uOpacity * mix(1.0, 0.6, local) * mix(1.0, 0.42, dimmed);
+    vAlpha = uOpacity * mix(1.0, 0.6, local) * mix(1.0, 0.34, dimmed);
   }
 `;
 
@@ -792,7 +792,7 @@ export function createCompose({ count = 13000, reducedMotion = false } = {}) {
       photoGlow.position.copy(item.sprite.position);
       // 柔光只铺到照片外面一点点：铺太大反而把照片衬得发灰
       photoGlow.scale.set(photoW * scale * grow * 1.32, photoH * scale * grow * 1.32, 1);
-      photoGlowMaterial.opacity = photoAlpha * 0.16;
+      photoGlowMaterial.opacity = photoAlpha * 0.1;
       return;
     }
 

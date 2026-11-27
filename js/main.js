@@ -476,7 +476,7 @@ function framePhoto(bitmap, maxEdge = 640) {
   const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
-  const pad = Math.max(10, Math.round(Math.min(width, height) * 0.075));
+  const pad = Math.max(9, Math.round(Math.min(width, height) * 0.055));
   const canvas = document.createElement('canvas');
   canvas.width = width + pad * 2;
   canvas.height = height + pad * 2;
@@ -484,17 +484,17 @@ function framePhoto(bitmap, maxEdge = 640) {
 
   ctx.drawImage(bitmap, pad, pad, width, height);
 
-  const stroke = Math.max(3, pad * 0.42);
+  const stroke = Math.max(3, pad * 0.34);
   const inset = stroke / 2 + pad * 0.12;
   const radius = Math.max(4, pad * 0.5);
 
   ctx.save();
   ctx.lineWidth = stroke;
-  ctx.strokeStyle = 'rgba(255, 222, 164, 0.82)';
-  ctx.shadowColor = 'rgba(255, 186, 104, 0.8)';
+  ctx.strokeStyle = 'rgba(255, 226, 182, 0.62)';
+  ctx.shadowColor = 'rgba(255, 186, 104, 0.5)';
   // 光晕原来给到 1.5 倍 pad，泛光再一叠，整圈就烧成一片白，
   // 照片在它旁边看着就"过曝"——其实是边太亮
-  ctx.shadowBlur = pad * 0.8;
+  ctx.shadowBlur = pad * 0.5;
   ctx.beginPath();
   if (typeof ctx.roundRect === 'function') {
     ctx.roundRect(inset, inset, canvas.width - inset * 2, canvas.height - inset * 2, radius);
@@ -1215,8 +1215,13 @@ function animate() {
     document.body.classList.toggle('is-composing', sceneHidden);
   }
 
-  // 过场期间雪下得更足，结束后慢慢回到平时的细雪
-  const snowTarget = santa.active || compose.covered ? 1 : 0;
+  // 过场期间雪下得更足，结束后慢慢回到平时的细雪。
+  // 但"看照片"例外：满屏的雪点是加法混合的，全糊在照片周围就成了白雾
+  const snowTarget = santa.active
+    ? 1
+    : compose.covered
+      ? 1 - 0.75 * compose.photoLevel
+      : 0;
   snowBoost += (snowTarget - snowBoost) * Math.min(1, dt * 1.6);
   snow.setIntensity(0.32 + snowBoost * 0.68);
   ground.setSnow(snowBoost);
@@ -1230,7 +1235,7 @@ function animate() {
 
   // 看照片的时候把泛光收掉大半：金边会被烧成一圈霓虹、整块区域糊成白
   const photoLevel = compose.photoLevel;
-  bloomPass.strength = BLOOM_STRENGTH * (1 - 0.66 * photoLevel);
+  bloomPass.strength = BLOOM_STRENGTH * (1 - 0.78 * photoLevel);
 
   if (useBloom) composer.render();
   else renderer.render(scene, camera);
